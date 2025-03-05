@@ -27,13 +27,13 @@ class L_plus(nn.Module):
 
 class L(nn.Module):
     """
-    For mapping an unconstrained square matrix to a lower triangular matrix.
+    For mapping an unconstrained square matrix to a lower triangular matrix with non-negative elements along the main diagonal.
     """
     def __init__(self):
         super().__init__()
 
     def forward(self, Z):
-        return Z.tril()
+        return Z.tril(-1) + torch.diag( torch.abs( Z.diag() ) )
     
 
 
