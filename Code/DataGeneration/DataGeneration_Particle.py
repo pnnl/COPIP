@@ -9,7 +9,7 @@ from scipy.integrate import odeint
 from scipy.interpolate import interp1d
 import gpytorch
 
-root = '/bask/projects/v/vjgo8416-lurienet/SEGP/'
+root = ''
 utils_path = root + 'Code/Utils'
 
 if utils_path in sys.path:
@@ -234,6 +234,11 @@ def main():
     # Solve ODE.
     Z = solve_particle(T, U, Z0, l) # shape = (M, Q, K, n).
 
+    #### new lines: Rescaling Z here (to approximately [0, 1] range) corresponds to 
+    #### dividing diagonal terms of C matrix. However, this completely changes images.
+    # Z[:,:,:,0] = Z[:,:,:,0] / np.max(Z[:,:,:,0])
+    # Z[:,:,:,1] = Z[:,:,:,1] / np.max(Z[:,:,:,1])
+  
     # Convert to tensors.
     T = torch.from_numpy(T).to(device)
     mean_U = torch.from_numpy(mean_U).to(device)
@@ -253,6 +258,13 @@ def main():
     dZn_transformed = transform_coords(dZn.cpu().numpy())
     Z_transformed = transform_coords(Z.cpu().numpy())
 
+    #### new lines: Rescaling here (to approximately [0, 1] range) keeps patterns the same, but
+    #### scales all trajectories to be squashed towards the origin (not ideal).
+    # Z_transformed[:,:,:,0] = Z_transformed[:,:,:,0] / np.max(Z_transformed[:,:,:,0])
+    # Z_transformed[:,:,:,1] = Z_transformed[:,:,:,1] / np.max(Z_transformed[:,:,:,1])
+    # dZn_transformed[:,:,:,0] = dZn_transformed[:,:,:,0] / np.max(dZn_transformed[:,:,:,0])
+    # dZn_transformed[:,:,:,1] = dZn_transformed[:,:,:,1] / np.max(dZn_transformed[:,:,:,1])
+  
     # Convert to tensors.
     dZn_transformed = torch.from_numpy(dZn_transformed).to(device)
     Z_transformed = torch.from_numpy(Z_transformed).to(device)
