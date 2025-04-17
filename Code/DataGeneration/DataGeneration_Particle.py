@@ -9,7 +9,7 @@ from scipy.integrate import odeint
 from scipy.interpolate import interp1d
 import gpytorch
 
-root = ''
+root = '/bask/projects/v/vjgo8416-lurienet/SEGP/'
 utils_path = root + 'Code/Utils'
 
 if utils_path in sys.path:
@@ -179,7 +179,7 @@ def traj_2_vid(r:int, d:int, dZ:torch.tensor):
 def main():
 
     # dataset directory.
-    dataset_number = 1
+    dataset_number = 5
     data_path = root + 'Data/Dataset{0}'.format(dataset_number)
 
     if os.path.isdir(data_path):
@@ -201,8 +201,8 @@ def main():
     np.random.seed(seed)
 
     # Time.
-    tmax = 4.
-    K = 400
+    tmax = 3.
+    K = 300
     T = torch.linspace(0, tmax, K) # shape = (K).
     step = T[1] - T[0]
 
@@ -218,11 +218,11 @@ def main():
     # Initial condition distribution parameters.
     mean_r = 1.5 # Mean radius.
     mean_theta = 0.0 # Mean angle.
-    sigma = 0.5 # Standard deviation.
+    sigma = 1e-3 # Standard deviation.
 
     # Sample M input signals and Q initial conditions.
-    M = 80
-    Q = 80
+    M = 40000
+    Q = 1
     U = sample_SE_input(seed, M, Q, tmax, mean_U, lt, T) # shape = (M, K).
     Z0 = sample_init(seed, Q, mean_r, mean_theta, sigma) # shape = (Q, n).
 
@@ -234,11 +234,6 @@ def main():
     # Solve ODE.
     Z = solve_particle(T, U, Z0, l) # shape = (M, Q, K, n).
 
-    #### new lines: Rescaling Z here (to approximately [0, 1] range) corresponds to 
-    #### dividing diagonal terms of C matrix. However, this completely changes images.
-    # Z[:,:,:,0] = Z[:,:,:,0] / np.max(Z[:,:,:,0])
-    # Z[:,:,:,1] = Z[:,:,:,1] / np.max(Z[:,:,:,1])
-  
     # Convert to tensors.
     T = torch.from_numpy(T).to(device)
     mean_U = torch.from_numpy(mean_U).to(device)
@@ -254,23 +249,16 @@ def main():
     var_noise = 1e-3
     dZn = add_noise(seed, var_noise, dZ)
 
-    # Transform data to Cartesian co-ords for plotting and generating videos.
+    # Transform data to Cartesian co-ords (x and y) for plotting and generating videos.
     dZn_transformed = transform_coords(dZn.cpu().numpy())
     Z_transformed = transform_coords(Z.cpu().numpy())
 
-    #### new lines: Rescaling here (to approximately [0, 1] range) keeps patterns the same, but
-    #### scales all trajectories to be squashed towards the origin (not ideal).
-    # Z_transformed[:,:,:,0] = Z_transformed[:,:,:,0] / np.max(Z_transformed[:,:,:,0])
-    # Z_transformed[:,:,:,1] = Z_transformed[:,:,:,1] / np.max(Z_transformed[:,:,:,1])
-    # dZn_transformed[:,:,:,0] = dZn_transformed[:,:,:,0] / np.max(dZn_transformed[:,:,:,0])
-    # dZn_transformed[:,:,:,1] = dZn_transformed[:,:,:,1] / np.max(dZn_transformed[:,:,:,1])
-  
     # Convert to tensors.
     dZn_transformed = torch.from_numpy(dZn_transformed).to(device)
     Z_transformed = torch.from_numpy(Z_transformed).to(device)
 
     # Map trajectories to videos.
-    r = 1.5 # radius of ball in pixels.
+    r = 2.0 # radius of ball in pixels.
     d = 40 # number of horizontal/vertical pixels in a frame.
     vid_batch = traj_2_vid(r, d, dZn_transformed) # shape = (M, Q, N, d, d).
     if device.type == 'cuda':
