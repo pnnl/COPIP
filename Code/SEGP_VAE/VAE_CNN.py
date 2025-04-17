@@ -12,7 +12,7 @@ class TransposeLayer(nn.Module):
 class VAEEncoder(nn.Module):
     '''
     Encoder. Maps frames (bs, N, d, d) to mean (bs, N, m) and variance (bs, N, m) of likelihood.
-    self.encoder returns log(var) to avoid numerical stability issues.
+    self.var returns log(var) to avoid numerical stability issues.
     args:
           input_dim: flattened dimension of image (d * d).
          hidden_dim: dimension of hidden layer.
@@ -25,8 +25,14 @@ class VAEEncoder(nn.Module):
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim
 
+         # Define the CNN component of encoder. Shapes below assume d=40.
+        self.CNN = nn.Sequential(
+                                 nn.Conv2d(in_channels=1, out_channels=5, kernel_size=5, stride=2, padding='valid'), # shape = (bs, 5, 18, 18)
+                                 nn.ReLU()              
+                                )
+
         self.layer1 = nn.Sequential(
-                                    nn.Linear(input_dim, hidden_dim),
+                                    nn.Linear( int(5*18*18), hidden_dim),
                                     TransposeLayer(),
                                     nn.BatchNorm1d(hidden_dim),
                                     TransposeLayer(),
@@ -35,16 +41,16 @@ class VAEEncoder(nn.Module):
         
         self.mean = nn.Linear(hidden_dim, output_dim)
         self.var = nn.Linear(hidden_dim, output_dim)
-        
+
+        # Initialize weights
         self._initialize_weights()
 
 
-
     def _initialize_weights(self):
-
-        # He initialization for Linear layers; biases as zero.
+        
+        # He initialization for Linear and Conv layers; biases as zero.
         for module in self.modules():
-            if isinstance(module, nn.Linear):
+            if isinstance(module, nn.Linear) or isinstance(module, nn.Conv2d):
                 init.kaiming_normal_(module.weight, mode='fan_in', nonlinearity='relu')
                 if module.bias is not None:
                     init.zeros_(module.bias)
@@ -52,11 +58,25 @@ class VAEEncoder(nn.Module):
 
 
     def forward(self, x):
+        
+        bs, N, d, _ = x.shape
 
-        x = torch.flatten(x, start_dim=2, end_dim=3) # shape = (bs, N, d*d)
-        out = self.layer1(x) # shape = (bs, N, hidden_dim)
-        mean = self.mean(out) # shape = (bs, N, m)
-        var = torch.exp(self.var(out)/2) # shape = (bs, N, m)
+        # Shape input for CNN.
+        x = torch.flatten(x, start_dim=0, end_dim=1) # shape = (bs*N, d, d)
+        x = x.unsqueeze(dim=1) # shape = (bs * N, 1, d, d)
+
+        # Pass through convolutional layers. Shapes below assume d=40.
+        x = self.CNN(x) # shape = (bs * N, 5, 18, 18)
+        
+        # Shape input for MLP.
+        x = torch.flatten(x, start_dim=1, end_dim=3) # shape = (bs * N, 5*18*18)
+        x = torch.unflatten(x, dim=0, sizes=(bs,N) ) # shape = (bs, N, 5*18*18)
+        
+        x = self.layer1(x) # shape = (bs, N, hidden_dim)
+
+        mean = self.mean(x) # shape = (bs, N, m)
+        var = torch.exp(self.var(x)/2) # shape = (bs, N, m)
+
         
         return mean, var
 
@@ -87,23 +107,12 @@ class VAEDecoder(nn.Module):
                                     nn.Linear(hidden_dim, output_dim)
                                     )
 
-        self._initialize_weights()
-
-
-
-    def _initialize_weights(self):
-
-        # He initialization for Linear layers; biases as zero.
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                init.kaiming_normal_(module.weight, mode='fan_in', nonlinearity='relu')
-                if module.bias is not None:
-                    init.zeros_(module.bias)
-
-
+        for i in self.decoder.modules():
+            if isinstance(i, nn.Linear):
+                init.kaiming_normal_(i.weight, mode='fan_in', nonlinearity='relu')
+                init.zeros_(i.bias)
 
     def forward(self, x):
-        return self.decoder(x)
+        out = self.decoder(x)
 
-
-
+        return out

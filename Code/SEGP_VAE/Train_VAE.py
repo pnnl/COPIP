@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
-import torch.nn.utils.parametrize as parametrize
-from torch.distributions.multivariate_normal import MultivariateNormal as MN
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import numpy as np
 import math
@@ -11,7 +10,6 @@ import time
 import pandas as pd
 import pickle
 import matplotlib.pyplot as plt
-import seaborn as sns
 
 root = '/bask/projects/v/vjgo8416-lurienet/SEGP/'
 
@@ -43,74 +41,69 @@ else:
 # Import custom files.
 import SEGP
 from VAE import VAEEncoder, VAEDecoder
-from Utils import plot_latents, lr_scheduler
-
-
-# Hardware settings.
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-torch.set_default_device(device)
-print("Device in use is: ", device)
+from Utils import plot_latents, scale_mean, scale_covar, MSE_projection
 
 
 
-def get_dataloaders(vid_batch:torch.tensor, dY:torch.tensor,
-                      batches:int, bs:int, test_split:float, idx=None, test_idx=None):
-  """
-  Function for splitting data into train and test dataloaders. Latent states corresponding to
-  test loader data are also returned for plotting purposes.
-  args:
-         vid_batch: data to split with shape = (M, Q, N, d, d).
-                dY: latent states to split in same way for plots (M, Q, N, m).
-           batches: number of batches.
-                bs: batch size.
-        test_split: ratio of batches to reserve for testing.
-               idx: indices for repeating a particular shuffle of vid_batch, dY.
-          test_idx: indices for repeating a particular train/test split.
-  returns:
-      train_loader: dataloader with shape = (batches - N_test, bs, N, d, d).
-       test_loader: dataloader with shape = (N_test, bs, N, d, d).
-           dY_test: latent states corresponding to test loader; shape = (N_test, bs, N, m).
-               idx: indices for repeating a particular shuffle of vid_batch, dY.
-          test_idx: indices for repeating a particular train/test split.
-  """
+def get_dataloaders(vid_batch:torch.tensor, dY:torch.tensor, batches:int, bs:int, test_split:float, seed:int, device):
+    """
+    Function for splitting data into train and test dataloaders. Latent states corresponding to
+    test loader data are also returned for plotting purposes.
+    args:
+            vid_batch: data to split with shape = (M, Q, N, d, d).
+                   dY: latent states to split in same way for plots (M, Q, N, m).
+              batches: number of batches.
+                   bs: batch size.
+           test_split: ratio of batches to reserve for testing.
+                 seed: random seed.
+               device: hardware device.
 
-  M, Q, N, d, _ = vid_batch.shape
-  m = dY.shape[3]
+    returns:
+         train_loader: dataloader with shape = (batches - N_test, bs, N, d, d).
+          test_loader: dataloader with shape = (N_test, bs, N, d, d).
+              dY_test: latent states corresponding to test loader; shape = (N_test, bs, N, m).
+    """
 
-  vid_batch = vid_batch.view(M*Q, N, d, d) # shape = (M * Q, N, d, d)
-  dY = dY.view(M*Q, N, m) # shape = (M * Q, N, m)
+    M, Q, N, d, _ = vid_batch.shape
+    m = dY.shape[3]
 
-  # reshape into shapes = (batches, bs, N, d, d), (batches, bs, N, m)
-  if batches * bs != M * Q:
-      print('M =', M)
-      print('Q =', Q)
-      raise Exception("batches * bs != M * Q!")
-  else:
-      vid_batch = vid_batch.view(batches, bs, N, d, d)
-      dY = dY.view(batches, bs, N, m)
+    vid_batch = vid_batch.view(M*Q, N, d, d) # shape = (M * Q, N, d, d)
+    dY = dY.view(M*Q, N, m) # shape = (M * Q, N, m)
 
-  if idx == None:
-      idx = torch.randperm(vid_batch.shape[0])
+    # reshape into shapes = (batches, bs, N, d, d), (batches, bs, N, m)
+    if batches * bs != M * Q:
+        print('M =', M)
+        print('Q =', Q)
+        raise Exception("batches * bs != M * Q!")
+    else:
+        vid_batch = vid_batch.view(batches, bs, N, d, d)
+        dY = dY.view(batches, bs, N, m)
 
-  # shuffle
-  vid_batch = vid_batch[idx]
-  dY = dY[idx]
+    # passing in the same seed will result in the same idx.
+    generator = torch.Generator(device=device)
+    generator.manual_seed(seed)
+    idx = torch.randperm(vid_batch.shape[0], generator=generator)
+    
+    # shuffle
+    vid_batch = vid_batch[idx]
+    dY = dY[idx]
 
-  # split into train and test sets.
-  N_test = int(batches * test_split)
-  if N_test < 1:
-      raise Exception("No batches reserved for testing!")
+    # split into train and test sets.
+    N_test = int(batches * test_split)
+    if N_test < 1:
+        raise Exception("No batches reserved for testing!")
 
-  if test_idx == None:
-      test_idx = np.random.randint(low=0, high=batches, size=N_test)
+    # passing in the same seed will result in the same test_idx.
+    rng = np.random.default_rng(seed)
+    test_idx = rng.integers(low=0, high=batches, size=N_test)
 
-  train_idx = np.delete( np.arange(0, batches), test_idx)
+    train_idx = np.delete( np.arange(0, batches), test_idx)
 
-  test_loader = DataLoader(vid_batch[test_idx], batch_size=1, shuffle=False)
-  train_loader = DataLoader(vid_batch[train_idx], batch_size=1, shuffle=False)
-  dY_test = dY[test_idx]
+    test_loader = DataLoader(vid_batch[test_idx], batch_size=1, shuffle=False)
+    train_loader = DataLoader(vid_batch[train_idx], batch_size=1, shuffle=False)
+    dY_test = dY[test_idx]
 
-  return train_loader, test_loader, dY_test, idx, test_idx
+    return train_loader, test_loader, dY_test
 
 
 
@@ -135,17 +128,16 @@ class ELBO(nn.Module):
         Computes the average reconstruction term across a batch of data.
         args:
                  vid_batch: Observed images (bs, N, d, d).
-            p_theta_logits: Logits of Bernouli distribution for each black/white pixel of image (bs, N, d, d, n_samples).
+            p_theta_logits: Logits of Bernouli distribution for each black/white pixel of image (bs, N, d, d).
         returns:
                   recon_av: average reconstruction term (scalar).
         """
 
-        bs, N, d, _, n_samples = p_theta_logits.shape
+        bs, N, d, _  = p_theta_logits.shape
 
-        recon = -self.BCE(p_theta_logits,
-                         vid_batch.unsqueeze(4).repeat(1,1,1,1,n_samples)) # shape = (bs, N, d, d, n_samples)
-        recon = recon.mean(dim=4) # shape = (bs, N, d, d)
-        recon = recon.sum( dim=(3,2,1) ) # shape = (bs)
+        recon = -self.BCE(p_theta_logits, vid_batch) # shape = (bs, N, d, d)
+        recon = recon.sum( dim=(3,2) ) # summed over image. shape = (bs, N)
+        recon = recon.mean(dim=1) # averaged over time. shape = (bs)
 
         recon_av = recon.mean()
 
@@ -224,7 +216,7 @@ class ELBO(nn.Module):
         Computes ELBO objective.
         args:
                   vid_batch: Observed images (bs, N, d, d).
-             p_theta_logits: Logits of Bernouli distribution for each black/white pixel of image (bs, N, d, d, n_samples).
+             p_theta_logits: Logits of Bernouli distribution for each black/white pixel of image (bs, N, d, d).
                  mean_prior: SEGP mean function (N, m).
                 covar_prior: SEGP covariance matrix (m*N, m*N).
                   mean_post: SEGP posterior mean function (bs, N, m).
@@ -234,27 +226,27 @@ class ELBO(nn.Module):
         """
 
         self.recon_obj = self.weights[0] * self.recon(vid_batch, p_theta_logits) # should always be negative.
+        
         self.kl_obj = - self.weights[1] * self.kl_divergence(mean_post, covar_post, mean_prior, covar_prior) # should always be negative.
-
+        # self.kl_ob = torch.tensor(0.0)
+        
         self.elbo_obj = self.recon_obj + self.kl_obj
 
         return self.elbo_obj
 
 
 
-def train(dT:torch.tensor, tmax, mean_U, mean_dU, train_loader, test_loader,
-          max_epoch:int, enc, GP, dec, optimizer, elbo, decay:float, decay_epochs:list,
-          model_dir:str, device, Y_test:torch.tensor, min_epoch=0,
-          mean_train_elbo_losses=[], mean_train_recon_losses=[],mean_train_KL_losses=[],
-          mean_test_elbo_losses=[], mean_test_recon_losses=[],mean_test_KL_losses=[]):
+def train(T, dT, tmax, mean_U, mean_dU, train_loader, test_loader, max_epoch, enc, GP, dec, optimizer, 
+          elbo, CL_factor, model_dir, device, dY_test, ds_vec, us_vec, min_epoch=0, stats=None):
 
     """
     Training loop.
-    args:
-                    dT: Sampled time points to compute the prior mean and covariance matrix.
+    args:           
+                     T: "Continuous" time points for computing integrals in GP, shape = (K). 
+                    dT: Sampled time points to compute the prior mean and covariance matrix, shape = (N).
                   tmax: Maximum time point.
-                mean_U: "Continuous" mean function of U used in GP integrals.
-               mean_dU: Discretised mean function of U corresponding to dT.
+                mean_U: "Continuous" mean function of U used in GP integrals, shape = (K,p).
+               mean_dU: Discretised mean function of U corresponding to dT, shape = (N,p).
           train_loader: Dataloader for training set. Each batch has shape = (1, bs, N, m).
            test_loader: Dataloader for test set. Each batch has shape = (1, bs, N, m).
              max_epoch: Epoch which training will terminate at.
@@ -263,175 +255,178 @@ def train(dT:torch.tensor, tmax, mean_U, mean_dU, train_loader, test_loader,
                    dec: Decoder.
              optimizer: Chosen optimizer.
                   elbo: ELBO objective function.
-                 decay: Scalar to multiply lr by.
-          decay_epochs: List containing the epochs which the lr should be cut at.
+             CL_factor: Factor to reduce the length of videos by.
              model_dir: Path to where models and data are stored.
                 device: Hardware in use.
-                Y_test: Ground truth latent states of test set (bs, N, m).
-    optional:
-              min_epoch: Epoch which training will start at.
- mean_train_elbo_losses: List containing elbo training loss at each epoch from disrupted run.
-mean_train_recon_losses: List containing recon training loss at each epoch from disrupted run.
-   mean_train_KL_losses: List containing KL training loss at each epoch from disrupted run.
-  mean_test_elbo_losses: List containing elbo test loss at each epoch from disrupted run.
- mean_test_recon_losses: List containing recon test loss at each epoch from disrupted run.
-    mean_test_KL_losses: List containing KL test loss at each epoch from disrupted run.
-
+               dY_test: Ground truth latent states of test set (_, bs, N, m).
+                ds_vec: Tensor containing down scaling terms for each of the m latent state dimensions shape = (m).
+                us_vec: Tensor containing up scaling terms for each of the m latent state dimensions shape = (m).
+             min_epoch: Epoch which training will start at.
+                 stats: Existing stats dataframe.
     returns:
            enc, GP, dec: Final version of the model.
     """
 
-    if len(mean_train_elbo_losses) == 0:
-        mean_train_elbo_losses = []
-        mean_train_recon_losses = []
-        mean_train_kl_losses = []
-
-    if len(mean_test_elbo_losses) == 0:
-        mean_test_elbo_losses = []
-        mean_test_recon_losses = []
-        mean_test_KL_losses = []
-
+    if CL_factor > 1 or CL_factor < 0 :
+        raise Exception("CL_factor must satisfy 0 =< CL_factor =< 1.")
+    
     for epoch in range(min_epoch, max_epoch):
-
+            
         # training loop
         enc.train()
         GP.train()
         dec.train()
 
-        batch_elbo_losses = []
-        batch_recon_losses = []
-        batch_KL_losses = []
+        # train losses for each batch train_loader
+        batch_elbo_train = []
+        batch_recon_train = []
+        batch_KL_train = []
 
         for batch, vid_batch in enumerate(train_loader):
 
             optimizer.zero_grad()
             vid_batch = vid_batch.squeeze(0).to(device).float() # shape = (bs, N, d, d)
             bs, N, d, _ = vid_batch.shape
+            K  = mean_U.shape[0]
+            
+            # curriculum learning schedule
+            N = int(CL_factor * N)
+            K = int(CL_factor * K)
+            tmax_cl = CL_factor * tmax
+
+            vid_batch = vid_batch[:,:N]
 
             ##### model outputs #####
             mean_lhood, var_lhood = enc(vid_batch) # both (bs, N, m)
-            mean_prior, covar_prior = GP(dT, tmax, mean_U, mean_dU) # (N, m) and (m*N, m*N) - same for all items in batch
+            mean_prior, covar_prior = GP(T[:K], dT[:N], tmax_cl, mean_U[:K], mean_dU[:N]) # (N, m) and (m*N, m*N) - same for all items in batch
             
-            # var_lhood is converted to diagonal covariance matrix with shape = (bs, m*N, m*N)
-            # and outputs have shape = (bs, N, m) & (bs, m*N, m*N)
-            mean_post, covar_post = GP.posterior(dT, dT, tmax, tmax, mean_U, mean_U, mean_dU, mean_dU,
-                                                 var_lhood.transpose(1, 2).flatten(start_dim=1, end_dim=2).diag_embed(), mean_lhood)
+            # map prior and likelihood to scaled space.
+            mean_lhood_scaled = scale_mean(ds_vec, mean_lhood) # (bs, N, m) 
+            mean_prior_scaled = scale_mean(ds_vec, mean_prior) # (N, m)
+            covar_lhood_scaled = scale_covar(ds_vec, var_lhood.transpose(1, 2).flatten(start_dim=1, end_dim=2).diag_embed() ) # (bs, mN, mN)
+            covar_prior_scaled = scale_covar(ds_vec, covar_prior) # (mN, mN)
+            
+            # Compute posterior in scaled space.
+            mean_post_scaled, covar_post_scaled = GP.posterior(covar_lhood_scaled, mean_lhood_scaled, mean_prior_scaled, covar_prior_scaled) # (bs, N, m), (bs, m*N, m*N)
+            
+            # Map posterior back to unscaled space.
+            mean_post = scale_mean(us_vec, mean_post_scaled) # (bs, N, m)
+            covar_post = scale_covar(us_vec, covar_post_scaled) # (bs, mN, mN)
 
-            samples = GP.sample_posterior() # (bs, N, m, n_samples=3)
-            p_theta_logits = dec( samples.transpose(2,3) ).transpose(2,3).unflatten(dim=2, sizes=(d,d)) # (bs, N, d, d, n_samples)
+            # draw samples from the unscaled space
+            samples = GP.sample(mean_post, covar_post) # (bs, N, m, n_samples=3)
+            samples = samples.mean(dim=3) # (bs, N, m)
+            
+            p_theta_logits = dec(samples).unflatten(dim=2, sizes=(d,d)) # (bs, N, d, d)
 
-            ##### compute loss #####
-            loss_elbo = - elbo( vid_batch, p_theta_logits, mean_prior, covar_prior, mean_post, covar_post)
-
-            loss_recon = - elbo.recon_obj.item()
-
-            loss_KL = - elbo.kl_obj.item()
-
+            ##### compute loss (reconstruction in unscaled space and KL in scaled space) #####
+            elbo_train = - elbo( vid_batch, p_theta_logits, mean_prior_scaled, covar_prior_scaled, mean_post_scaled, covar_post_scaled)
+            recon_train = - elbo.recon_obj.item()
+            KL_train = - elbo.kl_obj.item()
 
             ##### optimise #####
-            loss_elbo.backward()
+            elbo_train.backward()
             optimizer.step()
 
-            batch_elbo_losses.append( loss_elbo.item() )
-            batch_recon_losses.append(loss_recon)
-            batch_KL_losses.append(loss_KL)
-
-        mean_train_elbo_losses.append( np.mean(batch_elbo_losses) )
-        mean_train_recon_losses.append( np.mean(batch_recon_losses) )
-        mean_train_KL_losses.append( np.mean(batch_KL_losses) )
-
-        optimizer = lr_scheduler(epoch, optimizer, decay, decay_epochs)
+            batch_elbo_train.append( elbo_train.item() )
+            batch_recon_train.append(recon_train)
+            batch_KL_train.append(KL_train)
 
         # testing loop
         enc.eval()
         GP.eval()
         dec.eval()
 
-        batch_elbo_losses = []
-        batch_recon_losses = []
-        batch_KL_losses = []
+        # test losses for each batch in test_loader
+        batch_elbo_test = []
+        batch_recon_test = []
+        batch_KL_test = []
 
         with torch.no_grad():
-          for batch, vid_batch in enumerate(test_loader):
+          for batch, vid_batch in enumerate(test_loader): 
 
               vid_batch = vid_batch.squeeze(0).to(device).float() # shape = (bs, N, d, d)
-
+              vid_batch = vid_batch[:,:N]
+              
               ##### model outputs #####
               mean_lhood, var_lhood = enc(vid_batch) # both (bs, N, m)
-              mean_prior, covar_prior = GP(dT, tmax, mean_U, mean_dU) # (N, m) and (m*N, m*N) - same for all items in batch
+              mean_prior, covar_prior = GP(T[:K], dT[:N], tmax_cl, mean_U[:K], mean_dU[:N]) # (N, m) and (m*N, m*N) - same for all items in batch
 
-              # var_lhood is converted to diagonal covariance matrix with shape = (bs, m*N, m*N)
-              # and outputs have shape = (bs, N, m) & (bs, m*N, m*N)
-              mean_post, covar_post = GP.posterior(dT, dT, tmax, tmax, mean_U, mean_U, mean_dU, mean_dU,
-                                                   var_lhood.transpose(1, 2).flatten(start_dim=1, end_dim=2).diag_embed(), mean_lhood)
+              # map prior and likelihood to scaled space.
+              mean_lhood_scaled = scale_mean(ds_vec, mean_lhood) # (bs, N, m) 
+              mean_prior_scaled = scale_mean(ds_vec, mean_prior) # (N, m)
+              covar_lhood_scaled = scale_covar(ds_vec, var_lhood.transpose(1, 2).flatten(start_dim=1, end_dim=2).diag_embed() ) # (bs, mN, mN)
+              covar_prior_scaled = scale_covar(ds_vec, covar_prior) # (mN, mN)
 
-              samples = GP.sample_posterior() # (bs, N, m, n_samples=3)
-              p_theta_logits = dec( samples.transpose(2,3) ).transpose(2,3).unflatten(dim=2, sizes=(d,d)) # (bs, N, d, d, n_samples)
+              # Compute posterior in scaled space.
+              mean_post_scaled, covar_post_scaled = GP.posterior(covar_lhood_scaled, mean_lhood_scaled, mean_prior_scaled, covar_prior_scaled) # (bs, N, m), (bs, m*N, m*N)
 
-              ##### compute loss #####
-              loss_elbo = - elbo( vid_batch, p_theta_logits, mean_prior, covar_prior, mean_post, covar_post)
+              # Map posterior back to unscaled space.
+              mean_post = scale_mean(us_vec, mean_post_scaled) # (bs, N, m)
+              covar_post = scale_covar(us_vec, covar_post_scaled) # (bs, mN, mN)
 
-              loss_recon = - elbo.recon_obj.item()
+              samples = GP.sample(mean_post, covar_post) # (bs, N, m, n_samples=3)
+              samples = samples.mean(dim=3) # (bs, N, m)
+              p_theta_logits = dec(samples).unflatten(dim=2, sizes=(d,d)) # (bs, N, d, d)
 
-              loss_KL = - elbo.kl_obj.item()
+              ##### compute loss (reconstruction in unscaled space and KL in scaled space) #####
+              elbo_test = - elbo( vid_batch, p_theta_logits, mean_prior_scaled, covar_prior_scaled, mean_post_scaled, covar_post_scaled)
+              recon_test = - elbo.recon_obj.item()
+              KL_test = - elbo.kl_obj.item()
 
-              batch_elbo_losses.append( loss_elbo.item() )
-              batch_recon_losses.append(loss_recon)
-              batch_KL_losses.append(loss_KL)
+              batch_elbo_test.append( elbo_test.item() )
+              batch_recon_test.append(recon_test)
+              batch_KL_test.append(KL_test)
 
-        mean_test_elbo_losses.append( np.mean(batch_elbo_losses) )
-        mean_test_recon_losses.append( np.mean(batch_recon_losses) )
-        mean_test_KL_losses.append( np.mean(batch_KL_losses) )
-
-        print('Iter %d/%d - Train ELBO Loss: %.3f - Recon Loss: %.3f - KL Loss: %.3f'
-          % (epoch + 1, max_epoch, mean_train_elbo_losses[epoch],
-             mean_train_recon_losses[epoch], mean_train_KL_losses[epoch]) )
-
-        print('Iter %d/%d - Test ELBO Loss: %.3f - Recon Loss: %.3f - KL Loss: %.3f'
-          % (epoch + 1, max_epoch, mean_test_elbo_losses[epoch],
-             mean_test_recon_losses[epoch], mean_test_KL_losses[epoch]) )
-
-
-        if epoch % 10 == 0:
+        if epoch % 1 == 0 or epoch == max_epoch:
             # mean of Bernoulli for each pixel, averaged over n_samples.
-            p_theta = torch.sigmoid(p_theta_logits).mean(dim=4) # shape = (bs, N, d, d)
-
+            p_theta = torch.sigmoid(p_theta_logits) # shape = (bs, N, d, d)
+            
+            # Project mean_post, covar_post from last test batch onto corresponding batch from Y_test.
+            proj_mean_post, W, MSE, proj_covar_post = MSE_projection(mean_post.cpu().numpy(), dY_test[batch,:,:N,:].cpu().numpy(), covar_post.cpu().numpy() )
+            torch.save(W, model_dir +  'W/epoch{:03d}.pt'.format(epoch) )
+            
             nplots = 3
-            fig = plt.gcf()
-            string = 'latents_{0}'.format(epoch+1)
-            temp = int(bs/2)
-            plot_latents(model_dir + 'Plots', string, vid_batch.unflatten(dim=0, sizes=(2,temp)), Y_test.unflatten(dim=0, sizes=(2,temp)), dT, tmax, nplots, recon_batch=p_theta, recon_traj=mean_post, recon_covar=covar_post)
-            fig.tight_layout()
-            plt.show()
+            string = 'proj_latents_{:04d}'.format(epoch)
+            plot_latents(model_dir + 'Data/Plots', string, vid_batch.unflatten(dim=0, sizes=(1,bs)), dY_test[batch,:,:N,:].unflatten(dim=0, sizes=(1,bs)), dT[:N], tmax_cl, nplots, recon_batch=p_theta, recon_traj=proj_mean_post, recon_covar=proj_covar_post)
 
+        # save model, optimizer.
+        checkpoint = {
+                        'epoch': epoch,
+                          'enc': enc.state_dict(),
+                           'GP': GP.state_dict(),
+                          'dec': dec.state_dict(),
+                    'optimizer': optimizer.state_dict()
+                    }
+        torch.save(checkpoint, model_dir + 'Checkpoints/epoch{:04d}.pth'.format(epoch) )
 
-        # save models
-        enc_path = model_dir + 'Encoder/epoch{:03d}.pt'.format(epoch+1)
-        GP_path = model_dir + 'GP/epoch{:03d}.pt'.format(epoch+1)
-        dec_path = model_dir + 'Decoder/epoch{:03d}.pt'.format(epoch+1)
+        # save stats averaged over the batch.
+        stats_path = model_dir + 'Data/stats.csv'
+        if epoch == 0:
+            stats = pd.DataFrame({
+                'epoch':[epoch],
+                'elbo train':[np.mean(batch_elbo_train)],
+                'recon train':[np.mean(batch_recon_train)],
+                'kl train':[np.mean(batch_KL_train)],
+                'elbo test':[np.mean(batch_elbo_test)],
+                'recon test':[np.mean(batch_recon_test)],
+                'kl test':[np.mean(batch_KL_test)]
+            })
+            stats.to_csv(stats_path, index=False)
+        else:
+            # append to existing stats dataframe.
+            stats_new = pd.DataFrame({
+                'epoch':epoch,
+                'elbo train':[np.mean(batch_elbo_train)],
+                'recon train':[np.mean(batch_recon_train)],
+                'kl train':[np.mean(batch_KL_train)],
+                'elbo test':[np.mean(batch_elbo_test)],
+                'recon test':[np.mean(batch_recon_test)],
+                'kl test':[np.mean(batch_KL_test)]
+            })
+            stats = pd.concat([stats, stats_new], ignore_index=True)
+            stats.to_csv(stats_path, index=False) # overwrites stats.
 
-        try:
-              torch.save(enc.state_dict(), enc_path)
-              torch.save(GP.state_dict(), GP_path)
-              torch.save(dec.state_dict(), dec_path)
-        except:
-              os.makedirs(model_dir + 'Encoder/')
-              os.makedirs(model_dir + 'GP/')
-              os.makedirs(model_dir + 'Decoder/')
-              torch.save(enc.state_dict(), enc_path)
-              torch.save(GP.state_dict(), GP_path)
-              torch.save(dec.state_dict(), dec_path)
-
-        # save stats.
-        stats_path = model_dir + 'stats.csv'
-        stats = pd.DataFrame()
-        stats["train elbo loss"] = mean_train_elbo_losses
-        stats["train recon loss"] = mean_train_recon_losses
-        stats["train KL loss"] = mean_train_KL_losses
-        stats["test elbo loss"] = mean_test_elbo_losses
-        stats["test recon loss"] = mean_test_recon_losses
-        stats["test KL loss"] = mean_test_KL_losses
-        stats.to_csv(stats_path, index=False)
 
         if device.type == 'cuda':
           torch.cuda.empty_cache()
@@ -441,134 +436,185 @@ mean_train_recon_losses: List containing recon training loss at each epoch from 
 
 
 def main():
+    
+    # Hardware settings.
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.set_default_device(device)
+    print("Device in use is: ", device)
 
-    # Directory where data is stored.
-    dataset_number = 1
-    data_path = root + 'Data/Dataset{0}'.format(dataset_number)
-
-    # Directory for storing models.
+    # Directory for storing checkpoints, plots, stats, etc.
     model_path = root + 'Models/'
     model_name = 'SEGP_VAE'
     exp_no = 1
     model_dir = model_path + model_name + '/Exp_{:03d}/'.format(exp_no)
 
-    if os.path.isdir(model_dir):
-        raise Exception("File already exists! Not overwriting.")
+    # Flag indicating if a checkpoint is being loaded in, followed by the epoch to load.
+    Load = False
+    Load_epoch = 0 # does nothing if Load is False.
+    
+    # If Load is True, these are the only extra parameters to be set. If False, more parameters below need to be set.
+    max_epoch = 500
+    CL_factor = 1.0 # curriculum learning factor for simplifying problem.
+
+    # Directory where data is stored.
+    if Load:
+        print('Loading dataset settings!')
+        train_settings = np.load(model_dir + 'Data/train_settings.pkl', allow_pickle=True)
+        dataset_number = train_settings['dataset_number']
+    else:
+        dataset_number = 2
+    
+    data_path = root + 'Data/Dataset{0}'.format(dataset_number)
+
+    if Load:
+        print("Loading from model_dir!")
+    elif not Load and os.path.isdir(model_dir):
+        raise Exception("File already exists and not loading model! Not overwriting.")
     else:
         os.makedirs(model_dir)
-        os.makedirs(model_dir + 'Plots/')
+        os.makedirs(model_dir + 'Checkpoints/')
+        os.makedirs(model_dir + 'W/') 
+        os.makedirs(model_dir + 'Data/Plots/')
 
-    # import data.
+    # Import data.
     data_setup = np.load(data_path + '/data_setup.pkl', allow_pickle=True)
+    T = torch.from_numpy( np.load(data_path + '/T.npy') ).to(device)
     dT = torch.from_numpy( np.load(data_path + '/dT.npy') ).to(device)
+    tmax = data_setup['tmax']
     mean_U = torch.from_numpy( np.load(data_path + '/mean_U.npy') ).unsqueeze(1).to(device)
     mean_dU = torch.from_numpy( np.load(data_path + '/mean_dU.npy') ).unsqueeze(1).to(device)
-    dZ = torch.from_numpy( np.load(data_path + '/dZ.npy') ).to(device)
+    dY = torch.from_numpy( np.load(data_path + '/dZ.npy') ).to(device)
     vid_batch = torch.from_numpy( np.load(data_path + '/vid_batch.npy') ).to(device)
 
     M, Q, N, d, _ = vid_batch.shape
+    K = T.shape[0]
+ 
+    # Scaling vectors.
+    dY0_max = torch.max(dY[:,:,:,0])
+    dY1_max = torch.max(dY[:,:,:,1])
+    down_scaling_vec = torch.tensor([1/dY0_max, 1/dY1_max])
+    up_scaling_vec = torch.tensor([dY0_max, dY1_max])
 
-    print('M = {0} \t Q = {1} \t N = {2} \t d = {3}'.format(M, Q, N, d))
+    # Setup data loaders.
+    if Load:
+        print('Loading dataloader settings!')
+        batches = train_settings['batches']
+        bs = train_settings['bs']
+        test_split = train_settings['test_split']
+        seed = train_settings['seed']
+    else:
+        batches = 80
+        bs = 500
+        test_split = 8/80
+        seed = 42
+    
+    train_loader, test_loader, dY_test = get_dataloaders(vid_batch, dY, batches, bs, test_split, seed, device) 
 
-    # setup data loaders.
-    batches = 20
-    bs = 320
-    test_split = 1/20
-    train_loader, test_loader, Z_test, idx, test_idx = get_dataloaders(vid_batch, dZ, batches, bs, test_split)  
-
-    with open(model_dir + 'idx.npy', 'wb') as f:
-      np.save(f, idx.cpu())
-
-    with open(model_dir + 'test_idx.npy', 'wb') as f:
-        np.save(f, test_idx)
-
-    with open(model_dir + 'Z_test.npy', 'wb') as f:
-        np.save(f, Z_test.cpu().numpy() )
-
-    del vid_batch, idx, test_idx
+    del vid_batch, dY # save memory.
     if device.type == 'cuda':
         torch.cuda.empty_cache()
 
     
     # Instantiate model.
-    m = data_setup['m']
-    n = data_setup['n']
-    p = data_setup['p']
-    lt = data_setup['lt']
-    tmax = data_setup['tmax']
-    mean_x0 = torch.tensor([data_setup['mean_r'], data_setup['mean_theta']])
-    covar_x0 = data_setup['sigma'] * torch.eye(n)
-    covar_noise = data_setup['var_noise'] * torch.eye(m*N, dtype=torch.double)
-    h_dim = 500
-    d = data_setup['d']
+    if Load:
+        print('Loading model settings!')
+        model_settings = np.load(model_dir + 'Data/model_settings.pkl', allow_pickle=True)
+        m = model_settings['m']
+        n = model_settings['n']
+        p = model_settings['p']
+        lt = model_settings['lt']
+        mean_x0 = model_settings['mean_x0']
+        covar_x0 = model_settings['covar_x0']
+        d = model_settings['d']
+        h_dim = model_settings['h_dim']
+        A = model_settings['A']
+        B = model_settings['B']
+        C = model_settings['C']
+        D = model_settings['D']
+    else:
+        m = data_setup['m']
+        n = data_setup['n']
+        p = data_setup['p']
+        lt = data_setup['lt']
+        mean_x0 = torch.tensor([data_setup['mean_r'], data_setup['mean_theta']])
+        covar_x0 = data_setup['sigma'] * torch.eye(n)
+        d = data_setup['d']
+        h_dim = 500
     
-    l = data_setup['l']
-    A_train = torch.tensor([[-l, 0.0], [0.0, 0.0]])
-    B_train = torch.tensor([[0.0], [1.0]])
-    C_train = torch.eye(m) # torch.tensor([[1, 0.0], [0.0, 1/scale]])
-    D_train = torch.zeros(m,p)
+        l = data_setup['l']
+        A = torch.tensor([[-l, 0.0], [0.0, 0.0]])
+        B = torch.tensor([[0.0], [1.0]])
+        C = torch.eye(m)
+        D = torch.zeros(m,p)
 
-    GP = SEGP.SEGP(m, n, p, lt, mean_x0, covar_x0, A_train, B_train, C_train, D_train).to(device)
+
+    GP = SEGP.SEGP(m, n, p, lt, mean_x0, covar_x0, A, B, C, D).to(device)
     enc = VAEEncoder(d*d, h_dim, m).to(device)
     dec = VAEDecoder(m, h_dim, d*d).to(device)
 
-    model_settings = {'m':m, 'n':n, 'p':p, 'lt':lt, 'mean_x0':mean_x0, 'covar_x0':covar_x0,
-                  'A_train':A_train, 'B_train':B_train, 'C_train':C_train, 'D_train':D_train,
-                    'd':d, 'h_dim':h_dim}
 
-
-    # Instantiate optimiser.
-    lr = 1e-3
-    wd = 1e-5 # weight decay
-    decay = 1e-1 # scalar to multiply lr by at decay_epochs
-    decay_epochs = [] # epochs to perform lr cut
+    # Instantiate optimizer, scheduler, loss.
+    if Load:
+        lr = train_settings['lr'] # manually drop lr as needed.
+        wd = train_settings['wd']
+        elbo_weights = train_settings['elbo_weights']
+    else:
+        lr = 9e-4 # manually drop lr as needed.
+        wd = 1e-5 # weight decay. 
+        elbo_weights = torch.tensor([1.0, 10.0]) # weight of (recon, KL) terms.
     
-    # optimizer = torch.optim.Adam(list(enc.parameters()) + list(GP.parameters()) + list(dec.parameters()),
-    #                             lr=lr, weight_decay=wd)
-    optimizer = torch.optim.Adam(list(enc.parameters()) + list(dec.parameters()), lr=lr, weight_decay=wd)
-
-    # Training settings.
-    min_epoch = 0
-    max_epoch = 10000
-
-    # Instantiate loss - weighted ELBO.
-    elbo_weights = torch.tensor([1.0, 1.0]) # weight of (recon, KL) terms.
+    optimizer = torch.optim.Adam(list(enc.parameters()) + list(dec.parameters()),lr=lr, weight_decay=wd)
     elbo = ELBO(elbo_weights)
+     
+    if Load:
+        print('Loading in model, optimizer and previous stats!')
+        checkpoint = torch.load(model_dir + 'Checkpoints/epoch{:04d}.pth'.format(Load_epoch), weights_only=True)
+        min_epoch = checkpoint['epoch'] + 1
+        enc.load_state_dict(checkpoint['enc'])
+        GP.load_state_dict(checkpoint['GP'])
+        dec.load_state_dict(checkpoint['dec'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        stats = pd.read_csv(model_dir + 'Data/stats.csv')
+        if min_epoch >= max_epoch:
+            raise Exception("min_epoch >= max_epoch.")
+        
+    # Save model and training settings. This will just overwrite if loading in a checkpoint.
+    model_settings = {'m':m, 'n':n, 'p':p, 'lt':lt, 'mean_x0':mean_x0, 'covar_x0':covar_x0, 
+                      'A':A, 'B':B, 'C':C, 'D':D, 'd':d, 'h_dim':h_dim}
+    
+    train_settings = {'dataset_number':dataset_number, 'batches':batches, 'bs':bs, 'test_split':test_split,
+            'seed':seed, 'lr':lr, 'wd':wd, 'max_epoch':max_epoch,
+                      'elbo_weights':elbo_weights}
 
-    train_settings = {'lr':lr, 'wd':wd, 'decay':decay, 'decay_epochs':decay_epochs, 'min_epoch':min_epoch, 
-                      'max_epoch':max_epoch, 'elbo_weights':elbo_weights}
-
-    with open(model_dir + 'model_settings.pkl', 'wb') as f:
+    with open(model_dir + 'Data/model_settings.pkl', 'wb') as f:
         pickle.dump(model_settings, f)
         f.close()
-    with open(model_dir + 'train_settings.pkl', 'wb') as f:
+    with open(model_dir + 'Data/train_settings.pkl', 'wb') as f:
         pickle.dump(train_settings, f)
         f.close()
 
     enc_params = sum(p.numel() for p in enc.parameters() if p.requires_grad)
     GP_params = sum(p.numel() for p in GP.parameters() if p.requires_grad)
     dec_params = sum(p.numel() for p in dec.parameters() if p.requires_grad)
-    print( 'parameter count =',  enc_params + GP_params + dec_params)
+    print('enc count =', enc_params) 
+    print('GP count = ', GP_params)
+    print('dec count =', dec_params)
 
     start_time = time.time()
-    print( "--- %s seconds ---" % (start_time) )
 
     # Train model.
-    enc, GP, dec = train(dT, tmax,  mean_U, mean_dU, train_loader, test_loader, max_epoch,
-                              enc, GP, dec, optimizer, elbo, decay, decay_epochs, model_dir,
-                                device, Z_test[0])
+    if Load:
+        enc, GP, dec = train(T, dT, tmax,  mean_U, mean_dU, train_loader, test_loader, max_epoch, enc, GP, dec, 
+                             optimizer, elbo, CL_factor, model_dir, device, dY_test, down_scaling_vec, 
+                             up_scaling_vec, min_epoch=min_epoch, stats=stats)
+    else:
+        enc, GP, dec = train(T, dT, tmax,  mean_U, mean_dU, train_loader, test_loader, max_epoch, enc, GP, dec, 
+                             optimizer, elbo, CL_factor, model_dir, device, dY_test, down_scaling_vec, 
+                             up_scaling_vec)
 
 
     exe_time = time.time() - start_time
     print( "--- %s seconds ---" % (exe_time) )
-
-
-    train_settings = {'lr':lr, 'wd':wd, 'decay':decay, 'decay_epochs':decay_epochs, 'min_epoch':min_epoch, 
-                      'max_epoch':max_epoch, 'elbo_weights':elbo_weights, 'exe_time':exe_time}
-
-    with open(model_dir + 'train_settings.pkl', 'wb') as f:
-        pickle.dump(train_settings, f)
-        f.close()
 
     return 0
 
