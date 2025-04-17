@@ -4,86 +4,150 @@ import numpy as np
 
 
 
-def scale_data(data:torch.tensor, scale:float, dim:int):
+def scale_mean(scaling_vec:torch.tensor, mean:torch.tensor):
     """
-    Function for scaling the specified  dimension of the data by a factor scale.
-    args:
-         data: Data matrix with shape (M, Q, N, m).
-        scale: Value to divide dimension m=dim by.
-          dim: Dimension m to scale.
+    Function for scaling the mean vector. This function assumes m=2.
+    args: 
+        scaling_vec: Tensor containing the scaling terms (m).
+               mean: Mean vector. Could be (bs, N, m) or (N, m).
     returns:
-         data: Data matrix with m=dim scaled by scale.
-    """
-
-    M, Q, N, m = data.shape
-
-    data = data.view(M*Q, N, m) # shape = (M*Q, N, m)
-    data_dim = data[:,:,dim] # (M*Q, N)
-    data[:,:,dim] = data_dim / scale
-
-    return data.view(M,Q,N,m)
-
-
-
-def scale_lhood(lhood:torch.tensor, scale:float, dim:int):
-    """
-    Function for scaling the specified dimension of the likelihood mean.
-    args:
-        lhood: Mean of likelihood distribution with shape (bs, N, m).
-        scale: Value to divide dimension m=dim by.
-          dim: Dimension m to scale.
-returns:
-        lhood: mean of likelihood with m=dim scaled by scale.
-    """
-
-    lhood_dim = lhood[:,:,dim] # (bs, N)
-    lhood[:,:,dim] = lhood_dim / scale
-
-    return lhood
-
-
-
-def scale_mean(mean:torch.tensor, scale:float, dim:int):
-    """
-    Function for scaling the specified dimension of the GP mean.
-    args:
-         mean: Mean of GP with shape (N, m).
-        scale: Value to divide dimension m=dim by.
-          dim: Dimension m to scale.
-returns:
-        mean: mean of GP with m=dim scaled by scale.
-    """
-
-    mean_dim = mean[:,dim] # (N).
-    mean[:,dim] = mean_dim / scale # (N,m).
-
-    return mean
-
-
-
-def scale_covar(covar:torch.tensor, m:int, scale:float, dim:int):
-    """
-    Function for scaling the specified dimension of the GP covariance matrix.
-    args:
-         covar: Covariance matrix of GP with shape (m*N, m*N).
-             m: Dimension of multivariate GP.
-         scale: Value to divide dimension m=dim by.
-           dim: Dimension m to scale.
-returns:
-  scaled_covar: Covariance matrix of GP with m=dim scaled by scale.
+        mean_scaled: Scaled mean vector with shape corresponding to mean.
     """
     
-    mN = covar.shape[0]
+    # Get shape of mean.
+    try:
+        bs, N, m = mean.shape # will work for lhood, posterior
+    except:
+        N, m = mean.shape # will work for prior
+        bs = None
+    
+    # Scale m=0 dim, then m=1 dim.
+    if bs == None:
+        mean_scaled = torch.zeros(N, m)
+        mean_scaled[:,0] = scaling_vec[0] * mean[:,0]
+        mean_scaled[:,1] = scaling_vec[1] * mean[:,1]
+    else:
+        mean_scaled = torch.zeros(bs, N, m)
+        mean_scaled[:,:,0] = scaling_vec[0] * mean[:,:,0]
+        mean_scaled[:,:,1] = scaling_vec[1] * mean[:,:,1]
+
+    return mean_scaled
+
+
+
+def scale_covar(scaling_vec:torch.tensor, covar:torch.tensor):
+    """
+    Function for scaling the covariance matrix. This function assumes m=2.
+    args: 
+        scaling_vec: Tensor containing the scaling terms (m).
+              covar: Covariance matrix. Could be (bs, m*N, m*N) or (m*N, m*N).
+    returns:
+        covar_scaled: Scaled covariance matrix  with shape corresponding to covar.
+    """
+
+    # Get shape of covar.
+    try:
+        bs, mN, _ = covar.shape # will work for lhood, posterior
+    except:
+        mN, _ = covar.shape # will work for prior
+        bs = None
+    
+    m = len(scaling_vec)
+
+    # Augment scaling_vec into scaling matrix of appropriate shape.
     N = int(mN/m)
+    scaling_mat = torch.eye(mN)
+    scaling_mat[:N, :N] = scaling_vec[0] * torch.eye(N)
+    scaling_mat[N:2*N, N:2*N] = scaling_vec[1] * torch.eye(N)
+    
+    # Scale covar.
+    if  bs == None:
+        covar_scaled = torch.matmul(covar, scaling_mat.t() )
+        covar_scaled = torch.matmul(scaling_mat, covar_scaled)
+    else:
+        covar_scaled = torch.bmm(covar, scaling_mat.t().repeat(bs,1,1))
+        covar_scaled = torch.bmm(scaling_mat.repeat(bs,1,1), covar_scaled)
 
-    scale_matrix = torch.eye(m*N) 
-    scale_matrix_dim = scale_matrix[dim*N:(dim+1)*N, dim*N:(dim+1)*N] / scale
-    scale_matrix[dim*N:(dim+1)*N, dim*N:(dim+1)*N] = scale_matrix_dim
-    
-    scaled_covar = torch.matmul(covar, scale_matrix)
-    scaled_covar = torch.matmul(scale_matrix, scaled_covar)
-    
-    return scaled_covar
+    return covar_scaled
+
+
+
+def MSE_projection(X, Y, VX=None):
+    """
+    Given X, project it onto Y.
+    args:
+        X: np array (bs, N, m).
+        Y: np array (bs, N, m).
+       VX: Covariance of X values as np array (bs, m*N, m*N).
+
+    returns:
+        X_rot: rotated X (bs, N, m)
+        W: nparray (m, m)
+        B: nparray (m, 1)
+        MSE: ||X_rot - Y||^2
+        VX_rot: rotated cov matrices (default zeros) (bs, N, m, m) # (bs, m*N, m*N)
+    """
+
+    bs, N, m = X.shape
+
+    X = X.reshape((bs*N, m))
+
+    X = np.hstack([X, np.ones((bs*N, 1))]) # (bs*N, m+1)
+
+    Y = Y.reshape(bs*N, m)
+
+    # W = (m+1, m), MSE = (2)
+    W, MSE, _, _ = np.linalg.lstsq(X, Y, rcond=None)
+
+    try:
+        MSE = MSE[0] + MSE[1]
+    except:
+        MSE = np.nan
+
+    X_rot = np.matmul(X, W) # (bs*N, m) 
+    X_rot = X_rot.reshape(bs, N, m)
+    X_rot = torch.from_numpy(X_rot) # (bs, N, m) 
+
+    VX_rot = np.zeros((bs, N, N, m, m))
+    if VX is not None:
+
+       # Collect 00, 11 covariances and croos-covariances into individual terms.
+       VX_00 = VX[:, :N, :N] # (bs, N, N)
+       VX_01 = VX[:, :N, N:2*N] # (bs, N, N)
+       VX_10 = VX[:, N:2*N, :N] # (bs, N, N)
+       VX_11 = VX[:, N:2*N, N:2*N] # (bs, N, N)
+
+       W_rot = torch.from_numpy(W[:m,:]).repeat(bs,1,1) # (bs,m,m)
+       W_rot_t = W_rot.transpose(1,2).numpy() # (bs,m,m)
+       W_rot = W_rot.numpy()
+
+       for i in range(N):
+            for j in range(N):
+
+                # VX_ij represents the matrix-valued covariance function at (i,j)
+                VX_ij = np.zeros( (bs, m, m) )
+                VX_ij[:,0,0] = VX_00[:,i,j]
+                VX_ij[:,0,1] = VX_01[:,i,j]
+                VX_ij[:,1,0] = VX_10[:,i,j]
+                VX_ij[:,1,1] = VX_11[:,i,j]
+
+                # VX_rot_ij is the rotated matrix-valued covariance function at (i,j)
+                VX_rot_ij = np.matmul(W_rot, VX_ij) # (bs, m, m)
+                VX_rot_ij = np.matmul(VX_rot_ij, W_rot_t) # (bs, m, m)
+
+                # VX_rot contains the matrix-valued covariance function for all times (i,j) and all items in batch.
+                VX_rot[:,i,j,:,:] = VX_rot_ij
+
+    VX_rot = torch.from_numpy(VX_rot) # (bs, N, N, m, m)
+
+    # Reshape Vx_rot: (bs, N, N, m, m) --> (bs, m*N, m*N)
+    VX_rot2 = torch.zeros(bs, m*N, m*N)
+    VX_rot2[:, :N, :N] = VX_rot[:, :, :, 0, 0] # (0,0) block with shape (bs, N, N)
+    VX_rot2[:, :N, N:2*N] = VX_rot[:, :, :, 0, 1] # (0,1) block with shape (bs, N, N)
+    VX_rot2[:, N:2*N, :N] = VX_rot[:, :, :, 1, 0] # (1,0) block with shape (bs, N, N)
+    VX_rot2[:, N:2*N, N:2*N] = VX_rot[:, :, :, 1, 1] # (1,1) block with shape (bs, N, N) 
+
+    return X_rot, torch.from_numpy(W), MSE, VX_rot2
 
 
 
@@ -138,57 +202,59 @@ def plot_latents(loc:str, file_name:str, vid_batch:torch.tensor, dY:torch.tensor
         return flat_vid
 
 
-    def plot_set(i, j):
-        # i: batch element
-        # j: plot column
+    def plot_set(j):
+        # j: plot on column j.
+        
+        idx = np.random.randint(0, M*Q)
 
         # first row is original video
-        vid = make_heatmap(vid_batch[i,:,:,:])
+        vid = make_heatmap(vid_batch[idx,:,:,:])
         ax[0][j].imshow(1-vid.cpu(), origin='lower', cmap='Greys')
         ax[0][j].axis('off')
 
         # second row is trajectories
-        ax[1][j].plot(dY[i,:,0].cpu(), dY[i,:,1].cpu())
+        ax[1][j].plot(dY[idx,:,0].cpu(), dY[idx,:,1].cpu(), label='True' )
         ax[1][j].set_xlim([xmin, xmax])
         ax[1][j].set_ylim([ymin, ymax])
-        ax[1][j].scatter(dY[i,0,0].cpu(), dY[i,0,1].cpu(), marker='o', c='C0')
-        ax[1][j].scatter(dY[i,-1,0].cpu(), dY[i,-1,1].cpu(), marker='*', c='C0')
+        ax[1][j].scatter(dY[idx,0,0].cpu(), dY[idx,0,1].cpu(), marker='o', c='C0')
+        ax[1][j].scatter(dY[idx,-1,0].cpu(), dY[idx,-1,1].cpu(), marker='*', c='C0')
 
         if recon_traj is not None:
-            ax[1][j].plot(recon_traj[i,:,0].cpu(), recon_traj[i,:,1].cpu(), c='C1')
-            ax[1][j].scatter(recon_traj[i,0,0].cpu(), recon_traj[i,0,1].cpu(), marker='o', c='C1')
-            ax[1][j].scatter(recon_traj[i,-1,0].cpu(), recon_traj[i,-1,1].cpu(), marker='*', c='C1')
+            ax[1][j].plot(recon_traj[idx,:,0].cpu(), recon_traj[idx,:,1].cpu(), c='C1', label='Prediction')
+            ax[1][j].scatter(recon_traj[idx,0,0].cpu(), recon_traj[idx,0,1].cpu(), marker='o', c='C1')
+            ax[1][j].scatter(recon_traj[idx,-1,0].cpu(), recon_traj[idx,-1,1].cpu(), marker='*', c='C1')
+        
+        ax[1][j].legend()
 
         # Third row is reconstructed video
         if recon_batch is not None:
-            recon = make_heatmap(recon_batch[i,:,:,:])
+            recon = make_heatmap(recon_batch[idx,:,:,:])
             ax[2][j].imshow(1-recon.cpu(), origin='lower', cmap='Greys')
             ax[2][j].axis('off')
 
     for i in range(nplots):
-        rand_idx = np.random.randint(0, M*Q, nplots)
-        plot_set(rand_idx[i], i)
+        plot_set(i)
 
     fig.savefig(loc + '/' + file_name + '.png')
-    plt.show()
+    plt.close()
 
-
-    if recon_traj is not None:
-        recon_var = torch.diag( recon_covar[0] ) # shape = (m*N)
+    if recon_covar is not None:
+        idx = np.random.randint(0, M*Q)
+        recon_var = torch.diag( recon_covar[idx] ) # shape = (m*N)
         recon_conf = 2 * torch.sqrt( recon_var ).cpu() # shape = (m*N)
 
         fig, ax = plt.subplots(1, 2, figsize=(10, 3))
-        ax[0].plot( dT.cpu(), dY[0,:,0].cpu(), 'r*' )
-        ax[0].plot( dT.cpu(), recon_traj[0,:,0].cpu() )
-        ax[0].fill_between(dT.cpu(), recon_traj[0,:,0].cpu() - recon_conf[:N],
-                            recon_traj[0,:,0].cpu() + recon_conf[:N], alpha=0.5, label='95% CI')
-        ax[1].plot( dT.cpu(), dY[0,:,1].cpu(), 'r*' )
-        ax[1].plot( dT.cpu(), recon_traj[0,:,1].cpu() )
-        ax[1].fill_between(dT.cpu(), recon_traj[0,:,1].cpu() - recon_conf[N:],
-                            recon_traj[0,:,1].cpu() + recon_conf[N:], alpha=0.5, label='95% CI')
+        ax[0].plot( dT.cpu(), dY[idx,:,0].cpu(), 'r*' )
+        ax[0].plot( dT.cpu(), recon_traj[idx,:,0].cpu() )
+        ax[0].fill_between(dT.cpu(), recon_traj[idx,:,0].cpu() - recon_conf[:N],
+                            recon_traj[idx,:,0].cpu() + recon_conf[:N], alpha=0.5, label='95% CI')
+        ax[1].plot( dT.cpu(), dY[idx,:,1].cpu(), 'r*' )
+        ax[1].plot( dT.cpu(), recon_traj[idx,:,1].cpu() )
+        ax[1].fill_between(dT.cpu(), recon_traj[idx,:,1].cpu() - recon_conf[N:],
+                            recon_traj[idx,:,1].cpu() + recon_conf[N:], alpha=0.5, label='95% CI')
 
         fig.savefig(loc + '/' + file_name + '_posterior.png')
-        plt.show()
+        plt.close()
 
     return 0
 
@@ -246,9 +312,7 @@ def plot_data(data_path, file_name, T, U, Z, dZn, var_noise):
 
     # Save figure
     plt.savefig(data_path + "/" + file_name)
-
-    # Show the plots
-    plt.show()
+    plt.close()
 
     return 0
 
@@ -303,33 +367,9 @@ def plot_individual_dims(data_path, file_name, dT, dU, dZn, var_noise):
 
     # Save figure
     plt.savefig(data_path + "/" + file_name)
-
-    # Show the plots
-    plt.show()
+    plt.close()
 
     return 0
-
-
-
-def lr_scheduler(epoch:int, optimizer, decay:float, decay_epochs:list):
-    """
-    Decay learning rate by a factor decay for every epoch in decay_epochs.
-    args:
-               epoch: Current epoch of training loop.
-           optimizer: Optimizer with parameters from previous epoch.
-               decay: Scalar to multiply lr by.
-        decay_epochs: List containing the epochs which the lr should be cut at.
-    returns:
-           optimizer: Same optimizer as before with updated lr.
-    """
-
-    if epoch in decay_epochs:
-      for param_group in optimizer.param_groups:
-          param_group['lr'] = decay*param_group['lr']
-
-      print( 'New learning rate is: %.4f' % ( param_group['lr']) )
-
-    return optimizer
 
 
 
