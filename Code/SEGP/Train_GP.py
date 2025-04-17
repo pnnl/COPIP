@@ -36,60 +36,59 @@ else:
 
 # Import custom files.
 import SEGP
-from Utils import lr_scheduler, scale_data
-
-# Hardware settings.
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-torch.set_default_device(device)
-print("Device in use is: ", device)
+from Utils import scale_mean, scale_covar
 
 
 
-def get_dataloaders(data:torch.tensor, M:int, Q:int, N:int, m:int, batches:int,
-                    bs:int, test_split:float):
+def get_dataloaders(dY:torch.tensor, batches:int, bs:int, test_split:float, seed:int, device):
   """
   Function for splitting data into train and test dataloaders.
   args:
-              data: data to split with shape = (M, Q, N, m).
-                 M: number of input signals.
-                 Q: number of initial conditions.
-                 N: number of discrete time points.
-                 m: number of latent states.
-           batches: number of batches.
-                bs: batch size.
-        test_split: ratio of batches to reserve for testing.
+                  dY: latent states to split into train and test sets (M, Q, N, m).
+            batches: number of batches.
+                  bs: batch size.
+          test_split: ratio of batches to reserve for testing.
+                seed: random seed.
+              device: hardware device.
+
   returns:
-      train_loader: dataloader with shape = (batches - N_test, bs, N, m).
-       test_loader: dataloader with shape = (N_test, bs, N, m).
+        train_loader: dataloader with shape = (batches - N_test, bs, N, m).
+        test_loader: dataloader with shape = (N_test, bs, N, m).
   """
 
-  data = data.view(M*Q, N, m) # shape = (M * Q, N, m)
+  M, Q, N, m = dY.shape
 
-  # shuffle
-  idx = torch.randperm(data.shape[0]).cpu()
-  data = data[idx]
+  dY = dY.view(M*Q, N, m) # shape = (M * Q, N, m)
 
   # reshape into shape = (batches, bs, N, m)
   if batches * bs != M * Q:
-    print('M =', M)
-    print('Q =', Q)
-    raise Exception("batches * bs != M * Q!")
+      print('M =', M)
+      print('Q =', Q)
+      raise Exception("batches * bs != M * Q!")
   else:
-    data = data.view(batches, bs, N, m)
+      dY = dY.view(batches, bs, N, m)
 
+  # passing in the same seed will result in the same idx.
+  generator = torch.Generator(device=device)
+  generator.manual_seed(seed)
+  idx = torch.randperm(dY.shape[0], generator=generator)
+
+  # shuffle
+  dY = dY[idx]
 
   # split into train and test sets.
   N_test = int(batches * test_split)
   if N_test < 1:
-    raise Exception("No batches reserved for testing!")
-  else:
-    test_idx = np.random.randint(low=0, high=batches, size=N_test)
-    train_idx = np.delete( np.arange(0, batches), test_idx)
-    test_set = data[test_idx]
-    train_set = data[train_idx]
+      raise Exception("No batches reserved for testing!")
 
-  test_loader = DataLoader(test_set, batch_size=1, shuffle=False)
-  train_loader = DataLoader(train_set, batch_size=1, shuffle=False)
+  # passing in the same seed will result in the same test_idx.
+  rng = np.random.default_rng(seed)
+  test_idx = rng.integers(low=0, high=batches, size=N_test)
+
+  train_idx = np.delete( np.arange(0, batches), test_idx)
+
+  test_loader = DataLoader(dY[test_idx], batch_size=1, shuffle=False)
+  train_loader = DataLoader(dY[train_idx], batch_size=1, shuffle=False)
 
   return train_loader, test_loader
 
@@ -160,221 +159,224 @@ class MLL(nn.Module):
 
 
 
-def train(dT:torch.tensor, tmax:float, mean_U:torch.tensor, mean_dU:torch.tensor, covar_noise:torch.tensor,
-          train_loader, test_loader, max_epoch:int, model, optimizer, mll, decay:float, decay_epochs:list,
-          model_dir:str, device, min_epoch=0, mean_train_losses=[], mean_test_losses=[]):
+def train(T:torch.tensor, dT:torch.tensor, tmax:float, mean_U:torch.tensor, mean_dU:torch.tensor, covar_noise:torch.tensor,
+          train_loader, test_loader, max_epoch:int, model, optimizer, mll, model_dir:str, device, ds_vec, us_vec):
     """
     Training loop.
-    args:
-                    dT: Sampled time points to compute the prior mean and covariance matrix.
+    args:           
+                     T: "Continuous" time points for computing integrals in GP, shape = (K). 
+                    dT: Sampled time points to compute the prior mean and covariance matrix, shape = (N).
                   tmax: Maximum time point.
-                mean_U: "Continuous" mean function of U used in GP integrals.
-               mean_dU: Discretised mean function of U corresponding to dT.
-           covar_noise: Covariance matrix for the measurement noise (m*N, m*N).
+                mean_U: "Continuous" mean function of U used in GP integrals, shape = (K,p).
+               mean_dU: Discretised mean function of U corresponding to dT, shape = (N,p).
+           covar_noise: Covariance of noise, shape = (mN, mN).
           train_loader: Dataloader for training set. Each batch has shape = (1, bs, N, m).
            test_loader: Dataloader for test set. Each batch has shape = (1, bs, N, m).
              max_epoch: Epoch which training will terminate at.
-                 model: Instantiation of the chosen model.
+                 model: Gaussian Process.
              optimizer: Chosen optimizer.
-                   mll: log marginal likelihood objective function.
-                 decay: Scalar to multiply lr by.
-          decay_epochs: List containing the epochs which the lr should be cut at.
+                   mll: MLL objective function.
              model_dir: Path to where models and data are stored.
                 device: Hardware in use.
-    optional:
-             min_epoch: Epoch which training will start at.
-     mean_train_losses: List containing training loss at each epoch from disrupted run.
-      mean_test_losses: List containing test loss at each epoch from disrupted run.
-
+                ds_vec: Tensor containing down scaling terms for each of the m latent state dimensions shape = (m).
+                us_vec: Tensor containing up scaling terms for each of the m latent state dimensions shape = (m).
     returns:
-                model: Final version of the model.
-    mean_train_losses: List containing updated training losses.
-     mean_test_losses: List containing updated test losses.
+                 model: Final version of the GP.
     """
 
-    if len(mean_train_losses) == 0:
-        mean_train_losses = []
+    covar_noise_scaled = scale_covar(ds_vec, covar_noise) # (mN, mN)
 
-    if len(mean_test_losses) == 0:
-        mean_test_losses = []
+    for epoch in range(max_epoch):
+      
+      print('epoch {}'.format(epoch) )
 
-    for epoch in range(min_epoch, max_epoch):
+      # training loop
+      model.train()
+      batch_train = []
 
-        # training loop
-        model.train()
-        batch_losses = []
+      for batch, y in enumerate(train_loader):
+          
+          y = y.to(device)    
 
-        for batch, y in enumerate(train_loader):
+          optimizer.zero_grad()
 
-            y = y.to(device)
-            optimizer.zero_grad()
-            mean, covar = model(dT, tmax, mean_U, mean_dU)
-            loss = -mll(y[0], mean, covar, covar_noise)
-            loss.backward()
-            optimizer.step()
-            batch_losses.append(loss.item())
+          mean, covar = model(T, dT, tmax, mean_U, mean_dU)
 
-            print('batch {} processed!'.format(batch) )
+          # scale for training.
+          mean_scaled = scale_mean(ds_vec, mean) # (N, m)
+          covar_scaled = scale_covar(ds_vec, covar) # (mN, mN)
+          y_scaled = scale_mean(ds_vec, y[0]) # (N, m)
 
-        mean_train_losses.append( np.mean(batch_losses) )
+          loss = -mll(y_scaled, mean_scaled, covar_scaled, covar_noise_scaled)
 
-        optimizer = lr_scheduler(epoch, optimizer, decay, decay_epochs)
+          loss.backward()
+          optimizer.step()
+          
+          batch_train.append(loss.item())
 
-        # testing loop
-        model.eval()
-        batch_losses = []
 
-        print('Start testing loop!')
+      # testing loop
+      model.eval()
+      batch_test = []
+
         
-        with torch.no_grad():
-          for batch, y in enumerate(test_loader):
+      with torch.no_grad():
+          for batch, y in enumerate(test_loader): 
+
               y = y.to(device)
-              mean, covar = model(dT, tmax, mean_U, mean_dU)
-              loss = -mll(y[0], mean, covar, covar_noise)
-              batch_losses.append(loss.item())
+              
+              mean, covar = model(T, dT, tmax, mean_U, mean_dU)
+          
+              # scale for training.
+              mean_scaled = scale_mean(ds_vec, mean) # (N, m)
+              covar_scaled = scale_covar(ds_vec, covar) # (mN, mN)
+              y_scaled = scale_mean(ds_vec, y[0]) # (N, m)
 
-          mean_test_losses.append( np.mean(batch_losses) )
+              loss = -mll(y_scaled, mean_scaled, covar_scaled, covar_noise_scaled)
+ 
+              batch_test.append(loss.item())
 
-        print('Iter %d/%d - Train Loss: %.3f - Test Loss: %.3f' % (epoch + 1, max_epoch, mean_train_losses[epoch], mean_test_losses[epoch]))
+      
+      print('Saving model and stats!')
+
+      # save model, optimizer.
+      checkpoint = {
+                    'epoch': epoch,
+                    'model': model.state_dict(),
+                    'optimizer': optimizer.state_dict()
+                    }
+      
+      torch.save(checkpoint, model_dir + 'Checkpoints/epoch{:04d}.pth'.format(epoch) )
+      
+      # save stats averaged over the batch.
+      stats_path = model_dir + 'Data/stats.csv'
+      if epoch == 0:
+          stats = pd.DataFrame({
+                'epoch':[epoch],
+                'mll train':[np.mean(batch_train)],
+                'mll test':[np.mean(batch_test)]
+                 })
+          stats.to_csv(stats_path, index=False)
+      else:
+          # append to existing stats dataframe.
+          stats_new = pd.DataFrame({
+              'epoch':epoch,
+                'mll train':[np.mean(batch_train)],
+                'mll test':[np.mean(batch_test)]
+            })
+          stats = pd.concat([stats, stats_new], ignore_index=True)
+          stats.to_csv(stats_path, index=False) # overwrites stats.
 
 
-        # save models
-        model_path = model_dir + 'epoch{:03d}.pt'.format(epoch+1)
-        torch.save(model.state_dict(), model_path)
+      if device.type == 'cuda':
+          torch.cuda.empty_cache()
 
-        # save stats.
-        stats_path = model_dir + 'stats.csv'
-        stats = pd.DataFrame()
-        stats["train loss"] = mean_train_losses
-        stats["test loss"] = mean_test_losses
-        stats.to_csv(stats_path, index=False)
-
-        if device.type == 'cuda':
-            torch.cuda.empty_cache()
-
-    return model, mean_train_losses, mean_test_losses
+    return model
 
 
 
 def main():
 
-    # Directory where data is stored.
-    dataset_number = 1 
-    data_path = root + 'Data/Dataset{0}'.format(dataset_number)
+  # Hardware settings.
+  device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+  torch.set_default_device(device)
+  print("Device in use is: ", device)
 
-    # Directory for storing models.
-    model_path = root + 'Models/'
+  # Directory where data is stored.
+  dataset_number = 4 
+  data_path = root + 'Data/Dataset{0}'.format(dataset_number)
 
-    # Training loop.
+  # Directory for storing checkpoints, plots, stats, etc.
+  model_path = root + 'Models/'
+  model_name = 'SEGP'
+  exp_no = 6
+  model_dir = model_path + model_name + '/Exp_{:03d}/'.format(exp_no)
 
-    model_name = 'SEGP'
-    exp_no = 2
-    model_dir = model_path + model_name + '/Exp_{:03d}/'.format(exp_no)
+  if os.path.isdir(model_dir):
+      raise Exception("File already exists! Not overwriting.")
+  else:
+      os.makedirs(model_dir)
+      os.makedirs(model_dir + 'Checkpoints/')
+      os.makedirs(model_dir + 'Data/Plots/')
 
-    if os.path.isdir(model_dir):
-        raise Exception("File already exists! Not overwriting.")
-    else:
-        os.makedirs(model_dir)
+  # Import data.
+  data_setup = np.load(data_path + '/data_setup.pkl', allow_pickle=True)
+  T = torch.from_numpy( np.load(data_path + '/T.npy') ).to(device)
+  dT = torch.from_numpy( np.load(data_path + '/dT.npy') ).to(device)
+  tmax = data_setup['tmax']
+  mean_U = torch.from_numpy( np.load(data_path + '/mean_U.npy') ).unsqueeze(1).to(device)
+  mean_dU = torch.from_numpy( np.load(data_path + '/mean_dU.npy') ).unsqueeze(1).to(device)
+  dY = torch.from_numpy( np.load(data_path + '/dZ.npy') ).to(device)
+  dYn = torch.from_numpy( np.load(data_path + '/dZn.npy') ).to(device)
+  
+  M, Q, N, m = dYn.shape
 
-    # import data
-    data_setup = np.load(data_path + '/data_setup.pkl', allow_pickle=True)
-    dZn = torch.from_numpy( np.load(data_path + '/dZn.npy') )
-    M, Q, N, n = dZn.shape
+  print('M = {0} \t Q = {1} \t N = {2} \t m = {3}'.format(M, Q, N, m))
 
-    print('M = {0} \t Q = {1} \t N = {2} \t n = {3}'.format(M, Q, N, n))
+  # Scaling vectors.
+  dY0_max = torch.max(dYn[:,:,:,0])
+  dY1_max = torch.max(dYn[:,:,:,1])
+  down_scaling_vec = torch.tensor([1/dY0_max, 1/dY1_max])
+  up_scaling_vec = torch.tensor([dY0_max, dY1_max])
+  
+  # setup  data loaders.
+  batches = 10
+  bs = 1000
+  test_split = 1/10
+  seed = 42
+  train_loader, test_loader = get_dataloaders(dYn, batches, bs, test_split, seed, device)
+
+  # Instantiate model.
+  m = data_setup['m']
+  n = data_setup['n']
+  p = data_setup['p']
+  lt = data_setup['lt']
+  mean_x0 = torch.tensor([data_setup['mean_r'], data_setup['mean_theta']])
+  covar_x0 = data_setup['sigma'] * torch.eye(n)
+  covar_noise = data_setup['var_noise'] * torch.eye(m*N)
+  covar_noise = covar_noise.to(device)
+
+  # l = data_setup['l']
+  A = None # torch.tensor([[-l, 0.0], [0.0, 0.0]])
+  B = None # torch.tensor([[0.0], [1.0]])
+  C = None # torch.eye(m)
+  D = None # torch.zeros(m,p)
+
+  model = SEGP.SEGP(m, n, p, lt, mean_x0, covar_x0, A, B, C, D).to(device)
+
+  # Instantiate optimiser, loss.
+  lr = 1e-1
+  wd = 1e-5 # weight decay
+  optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
+  mll = MLL()
+
+  max_epoch = 50
+
+  # Save model and training settings. This will just overwrite if loading in a checkpoint.
+  model_settings = {'m':m, 'n':n, 'p':p, 'lt':lt, 'mean_x0':mean_x0, 'covar_x0':covar_x0, 
+                      'A':A, 'B':B, 'C':C, 'D':D}
     
-    # scale theta by scale.
-    scale = 5.5
-    dim = 1
-    dZn = scale_data(dZn, scale, dim)
+  train_settings = {'dataset_number':dataset_number, 'batches':batches, 'bs':bs, 'test_split':test_split,
+            'seed':seed, 'lr':lr, 'wd':wd, 'max_epoch':max_epoch}
 
-    # setup  data loaders.
-    batches = 20
-    bs = 320
-    test_split = 1/20
-    train_loader, test_loader = get_dataloaders(dZn, M, Q, N, n, batches, bs, test_split)
+  with open(model_dir + 'Data/model_settings.pkl', 'wb') as f:
+    pickle.dump(model_settings, f)
+    f.close()
+  with open(model_dir + 'Data/train_settings.pkl', 'wb') as f:
+    pickle.dump(train_settings, f)
+    f.close()
 
+  # Train model.
+  print( 'parameter count =', sum(p.numel() for p in model.parameters() if p.requires_grad) )
+  start_time = time.time()
+    
+  model = train(T, dT, tmax, mean_U, mean_dU, covar_noise, train_loader, test_loader, max_epoch, model, 
+                optimizer, mll, model_dir, device, down_scaling_vec, up_scaling_vec)
+  
+  exe_time = time.time() - start_time
+  print( "--- %s seconds ---" % (exe_time) )
 
-    # Import known parameters of data generation process.
-    m = data_setup['m']
-    p = data_setup['p']
-    lt = data_setup['lt']
-    tmax = data_setup['tmax']
-    mean_x0 = torch.tensor([data_setup['mean_r'], data_setup['mean_theta']])
-    covar_x0 = data_setup['sigma'] * torch.eye(n)
-    covar_noise = data_setup['var_noise'] * torch.eye(m*N, dtype=torch.double)
-
-    # Import data.
-    dT = torch.from_numpy( np.load(data_path + '/dT.npy') )
-    mean_U = torch.from_numpy( np.load(data_path + '/mean_U.npy') ).unsqueeze(1)
-    mean_dU = torch.from_numpy( np.load(data_path + '/mean_dU.npy') ).unsqueeze(1)
-
-    # Instantiate model.
-    # l = data_setup['l']
-    A_train = None # torch.tensor([[-l, 0.0], [0.0, 0.0]])
-    B_train = torch.tensor([[0.0], [1.0]])
-    C_train = None # torch.tensor([[1, 0.0], [0.0, 1/scale]])
-    D_train = torch.zeros(m,p)
-
-    model = SEGP.SEGP(m, n, p, lt, mean_x0, covar_x0, A_train, B_train, C_train, D_train).to(device)
-
-    model_settings = {'m':m, 'n':n, 'p':p, 'lt':lt, 'mean_x0':mean_x0, 'covar_x0':covar_x0, 'A_train':A_train,
-                      'B_train':B_train, 'C_train':C_train, 'D_train':D_train}
-
-
-    # Instantiate optimiser.
-    lr = 1e-1
-    wd = 1e-5 # weight decay
-    decay = 0.1 # scalar to multiply lr by at decay_epochs
-    decay_epochs = [] # epochs to perform lr cut
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)  # Includes GaussianLikelihood parameters
-
-    # Instantiate loss - the marginal log likelihood.
-    mll = MLL()
-    min_epoch = 0
-    max_epoch = 25
-
-    train_settings = {'batches':batches, 'bs':bs, 'test_split':test_split, 'lr':lr, 'wd':wd,
-                      'decay':decay, 'decay_epochs':decay_epochs, 'max_epoch':max_epoch}
-
-
-    with open(model_dir + 'model_settings.pkl', 'wb') as f:
-        pickle.dump(model_settings, f)
-        f.close()
-    with open(model_dir + 'train_settings.pkl', 'wb') as f:
-        pickle.dump(train_settings, f)
-        f.close()
-
-
-    # Train model.
-    print( 'parameter count =', sum(p.numel() for p in model.parameters() if p.requires_grad) )
-    start_time = time.time()
-    print( "--- %s seconds ---" % (start_time) )
-
-
-    dT = dT.to(device)
-    mean_U = mean_U.to(device)
-    mean_dU = mean_dU.to(device)
-    covar_noise = covar_noise.to(device)
-
-
-    model, mean_train_losses, mean_test_losses = train(dT, tmax, mean_U, mean_dU, covar_noise, train_loader, test_loader, max_epoch, model, optimizer, mll, decay, decay_epochs, model_dir, device)
-
-
-    exe_time = time.time() - start_time
-    print( "--- %s seconds ---" % (exe_time) )
-
-
-    train_settings = {'batches':batches, 'bs':bs, 'test_split':test_split, 'lr':lr, 'wd':wd,
-                      'decay':decay, 'decay_epochs':decay_epochs, 'max_epoch':max_epoch,
-                      'exe_time':exe_time}
-
-    with open(model_dir + 'train_settings.pkl', 'wb') as f:
-        pickle.dump(train_settings, f)
-        f.close()
-
-
-    return 0
+  return 0
 
 
 
