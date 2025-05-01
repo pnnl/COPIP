@@ -13,7 +13,6 @@ import pickle
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-
 root = '/bask/projects/v/vjgo8416-lurienet/SEGP/'
 
 
@@ -289,7 +288,7 @@ def main():
   # Directory for storing checkpoints, plots, stats, etc.
   model_path = root + 'Models/'
   model_name = 'SEGP'
-  exp_no = 6
+  exp_no = 5
   model_dir = model_path + model_name + '/Exp_{:03d}/'.format(exp_no)
 
   if os.path.isdir(model_dir):
@@ -340,7 +339,7 @@ def main():
   A = None # torch.tensor([[-l, 0.0], [0.0, 0.0]])
   B = None # torch.tensor([[0.0], [1.0]])
   C = None # torch.eye(m)
-  D = None # torch.zeros(m,p)
+  D = torch.zeros(m,p)
 
   model = SEGP.SEGP(m, n, p, lt, mean_x0, covar_x0, A, B, C, D).to(device)
 

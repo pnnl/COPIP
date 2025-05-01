@@ -334,8 +334,8 @@ def main():
     root = '/bask/projects/v/vjgo8416-lurienet/SEGP/'
     model_name = 'SEGP'
     dataset_no = 4
-    exp_no = 2
-    model_no = 49
+    exp_no = 5
+    model_no = 33
     data_path = root + 'Data/Dataset{0}'.format(dataset_no)
     model_path = root + 'Models/{}/Exp_{:03d}/'.format(model_name, exp_no)
     plots_path = model_path + 'Data/Plots/'
@@ -376,7 +376,7 @@ def main():
     mean, covar = model(T, dT, tmax, mean_U, mean_dU)
     
     # Load trained model
-    model_lt = SEGP.SEGP(m, n, p, lt, mean_x0, covar_x0, None, B, None, D).to(device)
+    model_lt = SEGP.SEGP(m, n, p, lt, mean_x0, covar_x0, None, None, None, D).to(device)
     model_lt.load_state_dict(checkpoint['model'])
     model_lt.eval()
     mean_lt, covar_lt = model_lt(T, dT, tmax, mean_U, mean_dU)
@@ -385,7 +385,7 @@ def main():
     print('A = ', model_lt.A)
     print('B = ', model_lt.B.weight)
     print('C = ', model_lt.C.weight)
-    print('D = ', model_lt.D.weight)
+    print('D = ', model_lt.D)
 
     # Import training stats.
     stats = pd.read_csv(model_path + 'Data/stats.csv')

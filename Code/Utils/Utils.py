@@ -1,6 +1,7 @@
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
+import scipy as sp
 
 
 
@@ -76,78 +77,56 @@ def MSE_projection(X, Y, VX=None):
     """
     Given X, project it onto Y.
     args:
-        X: np array (bs, N, m).
-        Y: np array (bs, N, m).
-       VX: Covariance of X values as np array (bs, m*N, m*N).
+          X: np array (bs, N, m).
+          Y: np array (bs, N, m).
+         VX: Covariance of X values as np array (bs, m*N, m*N).
 
     returns:
-        X_rot: rotated X (bs, N, m)
-        W: nparray (m, m)
-        B: nparray (m, 1)
-        MSE: ||X_rot - Y||^2
-        VX_rot: rotated cov matrices (default zeros) (bs, N, m, m) # (bs, m*N, m*N)
+            Y_pred: affine transformation of X (bs, N, m).
+                 W: nparray (m+1, m).
+               MSE: ||Y - Y_pred||^2.
+           VY_pred: cov matrix of Y_pred (bs, m*N, m*N).
     """
 
     bs, N, m = X.shape
 
-    X = X.reshape((bs*N, m))
+    # Reshape to stack all samples: (bs * N, m)
+    X_flat = X.reshape(-1, m)
+    Y_flat = Y.reshape(-1, m)
 
-    X = np.hstack([X, np.ones((bs*N, 1))]) # (bs*N, m+1)
-
-    Y = Y.reshape(bs*N, m)
-
-    # W = (m+1, m), MSE = (2)
-    W, MSE, _, _ = np.linalg.lstsq(X, Y, rcond=None)
+    # Stack ones to include biases in W
+    X_flat = np.hstack([X_flat, np.ones((bs*N, 1))]) # (bs*N, m+1)
+    
+    # Get least squares solution, W = (m+1, m), MSE = (2)
+    W, MSE, rank, s = sp.linalg.lstsq(X_flat, Y_flat) 
 
     try:
         MSE = MSE[0] + MSE[1]
     except:
         MSE = np.nan
 
-    X_rot = np.matmul(X, W) # (bs*N, m) 
-    X_rot = X_rot.reshape(bs, N, m)
-    X_rot = torch.from_numpy(X_rot) # (bs, N, m) 
+    # Get predicted Y.
+    Y_pred = np.einsum('bnm,km->bnm', X, W)
+    Y_pred = torch.from_numpy(Y_pred) # (bs, N, m) 
 
-    VX_rot = np.zeros((bs, N, N, m, m))
+    # Get covariance matrix of Y_pred.
     if VX is not None:
+      
+      # Build Kronecker product: W ⊗ I_N -> shape: (q*N, m*N)
+      I_N = np.eye(N)
+      kron = np.kron(W[:m], I_N)  # shape = (q*N, m*N)
 
-       # Collect 00, 11 covariances and croos-covariances into individual terms.
-       VX_00 = VX[:, :N, :N] # (bs, N, N)
-       VX_01 = VX[:, :N, N:2*N] # (bs, N, N)
-       VX_10 = VX[:, N:2*N, :N] # (bs, N, N)
-       VX_11 = VX[:, N:2*N, N:2*N] # (bs, N, N)
+      # Transform covariance: K_new = kron.T @ K @ kron for each batch
+      VY_pred = np.empty((bs, m*N, m*N))
+      for b in range(bs):
+        VXb = VX[b]
+        VY_pred[b] = np.transpose(kron) @ VXb @ kron
 
-       W_rot = torch.from_numpy(W[:m,:]).repeat(bs,1,1) # (bs,m,m)
-       W_rot_t = W_rot.transpose(1,2).numpy() # (bs,m,m)
-       W_rot = W_rot.numpy()
+      VY_pred = torch.from_numpy(VY_pred)
+    else:
+      VY_pred = None
 
-       for i in range(N):
-            for j in range(N):
-
-                # VX_ij represents the matrix-valued covariance function at (i,j)
-                VX_ij = np.zeros( (bs, m, m) )
-                VX_ij[:,0,0] = VX_00[:,i,j]
-                VX_ij[:,0,1] = VX_01[:,i,j]
-                VX_ij[:,1,0] = VX_10[:,i,j]
-                VX_ij[:,1,1] = VX_11[:,i,j]
-
-                # VX_rot_ij is the rotated matrix-valued covariance function at (i,j)
-                VX_rot_ij = np.matmul(W_rot, VX_ij) # (bs, m, m)
-                VX_rot_ij = np.matmul(VX_rot_ij, W_rot_t) # (bs, m, m)
-
-                # VX_rot contains the matrix-valued covariance function for all times (i,j) and all items in batch.
-                VX_rot[:,i,j,:,:] = VX_rot_ij
-
-    VX_rot = torch.from_numpy(VX_rot) # (bs, N, N, m, m)
-
-    # Reshape Vx_rot: (bs, N, N, m, m) --> (bs, m*N, m*N)
-    VX_rot2 = torch.zeros(bs, m*N, m*N)
-    VX_rot2[:, :N, :N] = VX_rot[:, :, :, 0, 0] # (0,0) block with shape (bs, N, N)
-    VX_rot2[:, :N, N:2*N] = VX_rot[:, :, :, 0, 1] # (0,1) block with shape (bs, N, N)
-    VX_rot2[:, N:2*N, :N] = VX_rot[:, :, :, 1, 0] # (1,0) block with shape (bs, N, N)
-    VX_rot2[:, N:2*N, N:2*N] = VX_rot[:, :, :, 1, 1] # (1,1) block with shape (bs, N, N) 
-
-    return X_rot, torch.from_numpy(W), MSE, VX_rot2
+    return Y_pred, torch.from_numpy(W), MSE, VY_pred
 
 
 
@@ -165,7 +144,7 @@ def plot_latents(loc:str, file_name:str, vid_batch:torch.tensor, dY:torch.tensor
           nplots: number of cols of plot, col row is one video.
      recon_batch: (_, N, d, d) tensor of reconstructed videos.
       recon_traj: (_, N, m) tensor of reconstructed trajectory.
-     recon_covar: (_, m*N, m*N) covariance matrix of lent state.
+     recon_covar: (_, m*N, m*N) covariance matrix of reconstructed trajectory.
     returns:
               ax: figure object with all plots.
     """

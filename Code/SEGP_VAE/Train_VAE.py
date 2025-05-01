@@ -111,13 +111,10 @@ class ELBO(nn.Module):
     """
     Class for computing the two terms of the ELBO objective: reconstruction term and KL divergence, 
     each averaged across a batch of data with shape (bs, N, m).
-    args:
-          weights: 2d tensor containing weights for each term of the ELBO objective.
     """
 
-    def __init__(self, weights:torch.tensor):
+    def __init__(self):
         super().__init__()
-        self.weights = weights
         self.BCE = nn.BCEWithLogitsLoss(reduction='none')
         self.register_buffer('pi', torch.tensor(math.pi) )
 
@@ -211,7 +208,7 @@ class ELBO(nn.Module):
 
 
     def forward(self, vid_batch:torch.tensor, p_theta_logits:torch.tensor, mean_prior:torch.tensor, 
-                covar_prior:torch.tensor, mean_post:torch.tensor, covar_post:torch.tensor):
+                covar_prior:torch.tensor, mean_post:torch.tensor, covar_post:torch.tensor, kl_weight:float):
         """
         Computes ELBO objective.
         args:
@@ -221,23 +218,53 @@ class ELBO(nn.Module):
                 covar_prior: SEGP covariance matrix (m*N, m*N).
                   mean_post: SEGP posterior mean function (bs, N, m).
                  covar_post: SEGP posterior covariance matrix (bs, m*N, m*N).
+                  kl_weight: weight for KL term of the ELBO objective. 
         returns:
                    elbo_obj: ELBO objective (scalar).
         """
 
-        self.recon_obj = self.weights[0] * self.recon(vid_batch, p_theta_logits) # should always be negative.
+        self.recon_obj = self.recon(vid_batch, p_theta_logits) # should always be negative.
         
-        self.kl_obj = - self.weights[1] * self.kl_divergence(mean_post, covar_post, mean_prior, covar_prior) # should always be negative.
-        # self.kl_ob = torch.tensor(0.0)
+        self.kl_obj = - self.kl_divergence(mean_post, covar_post, mean_prior, covar_prior) # should always be negative.
         
-        self.elbo_obj = self.recon_obj + self.kl_obj
+        self.elbo_obj = self.recon_obj + ( kl_weight * self.kl_obj )
 
         return self.elbo_obj
 
 
 
+class KLAnnealingScheduler():
+    """
+    Class for computing the weight of the KL divergence term (in the ELBO objective) to be used at each epoch.
+    args:
+        initial_beta: initial weight of KL term.
+          final_beta: final weight of KL term.
+             warm_up: number of epochs to linearly increase beta from initial_beta to final_beta. After warm_up, beta = final_beta.
+       start_warm_up: epoch to begin the warm up period.
+    """
+    
+    def __init__(self, initial_beta:float, final_beta:float, warm_up:int, start_warm_up:int):
+        self.initial_beta = initial_beta
+        self.final_beta = final_beta
+        self.warm_up = warm_up
+        self.start_warm_up = start_warm_up
+        self.beta = initial_beta
+
+    def step(self, epoch:int):
+
+        if epoch < self.start_warm_up: # Keep beta constant before warm_up.
+            self.beta = self.initial_beta
+        elif epoch >= self.start_warm_up and epoch < self.start_warm_up + self.warm_up: # Linearly increase beta from initial_beta to final_beta.
+            self.beta = self.initial_beta + (self.final_beta - self.initial_beta) * ( (epoch - self.start_warm_up) / self.warm_up )
+        else:
+            self.beta = self.final_beta  # Keep beta constant after warm_up.
+
+        return self.beta
+
+
+
 def train(T, dT, tmax, mean_U, mean_dU, train_loader, test_loader, max_epoch, enc, GP, dec, optimizer, 
-          elbo, CL_factor, model_dir, device, dY_test, ds_vec, us_vec, min_epoch=0, stats=None):
+          elbo, kl_sched, CL_factor, model_dir, device, dY_test, ds_vec, us_vec, min_epoch=0, stats=None):
 
     """
     Training loop.
@@ -255,6 +282,7 @@ def train(T, dT, tmax, mean_U, mean_dU, train_loader, test_loader, max_epoch, en
                    dec: Decoder.
              optimizer: Chosen optimizer.
                   elbo: ELBO objective function.
+              kl_sched: Annealing schedule for weighting the KL divergence term of ELBO loss.
              CL_factor: Factor to reduce the length of videos by.
              model_dir: Path to where models and data are stored.
                 device: Hardware in use.
@@ -285,6 +313,7 @@ def train(T, dT, tmax, mean_U, mean_dU, train_loader, test_loader, max_epoch, en
         for batch, vid_batch in enumerate(train_loader):
 
             optimizer.zero_grad()
+
             vid_batch = vid_batch.squeeze(0).to(device).float() # shape = (bs, N, d, d)
             bs, N, d, _ = vid_batch.shape
             K  = mean_U.shape[0]
@@ -320,9 +349,10 @@ def train(T, dT, tmax, mean_U, mean_dU, train_loader, test_loader, max_epoch, en
             p_theta_logits = dec(samples).unflatten(dim=2, sizes=(d,d)) # (bs, N, d, d)
 
             ##### compute loss (reconstruction in unscaled space and KL in scaled space) #####
-            elbo_train = - elbo( vid_batch, p_theta_logits, mean_prior_scaled, covar_prior_scaled, mean_post_scaled, covar_post_scaled)
-            recon_train = - elbo.recon_obj.item()
-            KL_train = - elbo.kl_obj.item()
+            kl_weight = kl_sched.step(epoch)
+            elbo_train = - elbo( vid_batch, p_theta_logits, mean_prior_scaled, covar_prior_scaled, mean_post_scaled, covar_post_scaled, kl_weight) # weighted elbo
+            recon_train = - elbo.recon_obj.item() # unweighted recon
+            KL_train = - elbo.kl_obj.item() # unweighted KL
 
             ##### optimise #####
             elbo_train.backward()
@@ -370,15 +400,17 @@ def train(T, dT, tmax, mean_U, mean_dU, train_loader, test_loader, max_epoch, en
               p_theta_logits = dec(samples).unflatten(dim=2, sizes=(d,d)) # (bs, N, d, d)
 
               ##### compute loss (reconstruction in unscaled space and KL in scaled space) #####
-              elbo_test = - elbo( vid_batch, p_theta_logits, mean_prior_scaled, covar_prior_scaled, mean_post_scaled, covar_post_scaled)
-              recon_test = - elbo.recon_obj.item()
-              KL_test = - elbo.kl_obj.item()
+              kl_weight = kl_sched.step(epoch)
+              elbo_test = - elbo( vid_batch, p_theta_logits, mean_prior_scaled, covar_prior_scaled, mean_post_scaled, covar_post_scaled, kl_weight) # weighted elbo
+              recon_test = - elbo.recon_obj.item() # unweighted recon
+              KL_test = - elbo.kl_obj.item() # unweighted KL
 
               batch_elbo_test.append( elbo_test.item() )
               batch_recon_test.append(recon_test)
               batch_KL_test.append(KL_test)
 
-        if epoch % 1 == 0 or epoch == max_epoch:
+        if epoch % 5 == 0 or epoch == max_epoch:
+            
             # mean of Bernoulli for each pixel, averaged over n_samples.
             p_theta = torch.sigmoid(p_theta_logits) # shape = (bs, N, d, d)
             
@@ -449,11 +481,11 @@ def main():
     model_dir = model_path + model_name + '/Exp_{:03d}/'.format(exp_no)
 
     # Flag indicating if a checkpoint is being loaded in, followed by the epoch to load.
-    Load = False
-    Load_epoch = 0 # does nothing if Load is False.
+    Load = True
+    Load_epoch = 300 # does nothing if Load is False.
     
     # If Load is True, these are the only extra parameters to be set. If False, more parameters below need to be set.
-    max_epoch = 500
+    max_epoch = 501
     CL_factor = 1.0 # curriculum learning factor for simplifying problem.
 
     # Directory where data is stored.
@@ -462,7 +494,7 @@ def main():
         train_settings = np.load(model_dir + 'Data/train_settings.pkl', allow_pickle=True)
         dataset_number = train_settings['dataset_number']
     else:
-        dataset_number = 2
+        dataset_number = 5
     
     data_path = root + 'Data/Dataset{0}'.format(dataset_number)
 
@@ -553,18 +585,25 @@ def main():
     dec = VAEDecoder(m, h_dim, d*d).to(device)
 
 
-    # Instantiate optimizer, scheduler, loss.
+    # Instantiate optimizer, loss, KL annealing scheduler.
     if Load:
-        lr = train_settings['lr'] # manually drop lr as needed.
+        lr = 1e-4 # train_settings['lr'] # manually drop lr as needed.
         wd = train_settings['wd']
-        elbo_weights = train_settings['elbo_weights']
+        initial_beta = train_settings['initial_beta']
+        final_beta = train_settings['final_beta']
+        warm_up = train_settings['warm_up']
+        start_warm_up = train_settings['start_warm_up']
     else:
         lr = 9e-4 # manually drop lr as needed.
-        wd = 1e-5 # weight decay. 
-        elbo_weights = torch.tensor([1.0, 10.0]) # weight of (recon, KL) terms.
-    
+        wd = 1e-5 # weight decay.
+        initial_beta = 1.0 # initial weight of KL divergence in ELBO loss.
+        final_beta = 1.0 # final weight of KL divergence in ELBO loss.
+        warm_up = 0 # number of epochs to linearly increase beta over. Beta = final_beta for epoch > start_warm_up + warm_up.
+        start_warm_up = 0 # epoch to start linearly increasing beta.
+
     optimizer = torch.optim.Adam(list(enc.parameters()) + list(dec.parameters()),lr=lr, weight_decay=wd)
-    elbo = ELBO(elbo_weights)
+    elbo = ELBO()
+    kl_sched = KLAnnealingScheduler(initial_beta, final_beta, warm_up, start_warm_up)
      
     if Load:
         print('Loading in model, optimizer and previous stats!')
@@ -582,9 +621,8 @@ def main():
     model_settings = {'m':m, 'n':n, 'p':p, 'lt':lt, 'mean_x0':mean_x0, 'covar_x0':covar_x0, 
                       'A':A, 'B':B, 'C':C, 'D':D, 'd':d, 'h_dim':h_dim}
     
-    train_settings = {'dataset_number':dataset_number, 'batches':batches, 'bs':bs, 'test_split':test_split,
-            'seed':seed, 'lr':lr, 'wd':wd, 'max_epoch':max_epoch,
-                      'elbo_weights':elbo_weights}
+    train_settings = {'dataset_number':dataset_number, 'batches':batches, 'bs':bs, 'test_split':test_split, 'seed':seed, 'lr':lr, 'wd':wd, 
+            'max_epoch':max_epoch, 'initial_beta':initial_beta, 'final_beta':final_beta, 'warm_up':warm_up, 'start_warm_up':start_warm_up}
 
     with open(model_dir + 'Data/model_settings.pkl', 'wb') as f:
         pickle.dump(model_settings, f)
@@ -605,11 +643,11 @@ def main():
     # Train model.
     if Load:
         enc, GP, dec = train(T, dT, tmax,  mean_U, mean_dU, train_loader, test_loader, max_epoch, enc, GP, dec, 
-                             optimizer, elbo, CL_factor, model_dir, device, dY_test, down_scaling_vec, 
+                             optimizer, elbo, kl_sched, CL_factor, model_dir, device, dY_test, down_scaling_vec, 
                              up_scaling_vec, min_epoch=min_epoch, stats=stats)
     else:
         enc, GP, dec = train(T, dT, tmax,  mean_U, mean_dU, train_loader, test_loader, max_epoch, enc, GP, dec, 
-                             optimizer, elbo, CL_factor, model_dir, device, dY_test, down_scaling_vec, 
+                             optimizer, elbo, kl_sched, CL_factor, model_dir, device, dY_test, down_scaling_vec, 
                              up_scaling_vec)
 
 
@@ -622,3 +660,6 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+
