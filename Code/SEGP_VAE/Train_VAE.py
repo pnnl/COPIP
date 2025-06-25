@@ -409,7 +409,7 @@ def train(T, dT, tmax, mean_U, mean_dU, train_loader, test_loader, max_epoch, en
               batch_recon_test.append(recon_test)
               batch_KL_test.append(KL_test)
 
-        if epoch % 5 == 0 or epoch == max_epoch:
+        if epoch % 10 == 0 or epoch == max_epoch:
             
             # mean of Bernoulli for each pixel, averaged over n_samples.
             p_theta = torch.sigmoid(p_theta_logits) # shape = (bs, N, d, d)
@@ -477,15 +477,15 @@ def main():
     # Directory for storing checkpoints, plots, stats, etc.
     model_path = root + 'Models/'
     model_name = 'SEGP_VAE'
-    exp_no = 1
+    exp_no = 4
     model_dir = model_path + model_name + '/Exp_{:03d}/'.format(exp_no)
 
     # Flag indicating if a checkpoint is being loaded in, followed by the epoch to load.
     Load = True
-    Load_epoch = 300 # does nothing if Load is False.
+    Load_epoch = 750 # does nothing if Load is False.
     
     # If Load is True, these are the only extra parameters to be set. If False, more parameters below need to be set.
-    max_epoch = 501
+    max_epoch = 851
     CL_factor = 1.0 # curriculum learning factor for simplifying problem.
 
     # Directory where data is stored.
@@ -494,7 +494,7 @@ def main():
         train_settings = np.load(model_dir + 'Data/train_settings.pkl', allow_pickle=True)
         dataset_number = train_settings['dataset_number']
     else:
-        dataset_number = 5
+        dataset_number = 6
     
     data_path = root + 'Data/Dataset{0}'.format(dataset_number)
 
@@ -535,9 +535,9 @@ def main():
         test_split = train_settings['test_split']
         seed = train_settings['seed']
     else:
-        batches = 80
-        bs = 500
-        test_split = 8/80
+        batches = 100
+        bs = 600
+        test_split = 10/100
         seed = 42
     
     train_loader, test_loader, dY_test = get_dataloaders(vid_batch, dY, batches, bs, test_split, seed, device) 
@@ -587,19 +587,19 @@ def main():
 
     # Instantiate optimizer, loss, KL annealing scheduler.
     if Load:
-        lr = 1e-4 # train_settings['lr'] # manually drop lr as needed.
+        lr = train_settings['lr'] # manually drop lr as needed.
         wd = train_settings['wd']
-        initial_beta = train_settings['initial_beta']
-        final_beta = train_settings['final_beta']
-        warm_up = train_settings['warm_up']
-        start_warm_up = train_settings['start_warm_up']
+        initial_beta = 0.7 # train_settings['initial_beta']
+        final_beta = 0.6 # train_settings['final_beta']
+        warm_up = 20 # train_settings['warm_up']
+        start_warm_up = 751 # train_settings['start_warm_up']
     else:
         lr = 9e-4 # manually drop lr as needed.
         wd = 1e-5 # weight decay.
-        initial_beta = 1.0 # initial weight of KL divergence in ELBO loss.
-        final_beta = 1.0 # final weight of KL divergence in ELBO loss.
-        warm_up = 0 # number of epochs to linearly increase beta over. Beta = final_beta for epoch > start_warm_up + warm_up.
-        start_warm_up = 0 # epoch to start linearly increasing beta.
+        initial_beta = 0.7 # initial weight of KL divergence in ELBO loss.
+        final_beta = 0.6 # final weight of KL divergence in ELBO loss.
+        warm_up = 20 # number of epochs to linearly increase beta over.
+        start_warm_up = 751 # epoch to start linearly increasing beta.
 
     optimizer = torch.optim.Adam(list(enc.parameters()) + list(dec.parameters()),lr=lr, weight_decay=wd)
     elbo = ELBO()
