@@ -179,7 +179,7 @@ def traj_2_vid(r:int, d:int, dZ:torch.tensor):
 def main():
 
     # dataset directory.
-    dataset_number = 5
+    dataset_number = 8
     data_path = root + 'Data/Dataset{0}'.format(dataset_number)
 
     if os.path.isdir(data_path):
@@ -221,7 +221,7 @@ def main():
     sigma = 1e-3 # Standard deviation.
 
     # Sample M input signals and Q initial conditions.
-    M = 40000
+    M = 100000
     Q = 1
     U = sample_SE_input(seed, M, Q, tmax, mean_U, lt, T) # shape = (M, K).
     Z0 = sample_init(seed, Q, mean_r, mean_theta, sigma) # shape = (Q, n).
