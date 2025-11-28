@@ -1,3 +1,11 @@
+
+
+
+"""
+Miscellaneous utility functions.
+"""
+
+
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,7 +18,7 @@ def scale_mean(scaling_vec:torch.tensor, mean:torch.tensor):
     Function for scaling the mean vector. This function assumes m=2.
     args: 
         scaling_vec: Tensor containing the scaling terms (m).
-               mean: Mean vector. Could be (bs, N, m) or (N, m).
+        mean: Mean vector. Could be (bs, N, m) or (N, m).
     returns:
         mean_scaled: Scaled mean vector with shape corresponding to mean.
     """
@@ -41,7 +49,7 @@ def scale_covar(scaling_vec:torch.tensor, covar:torch.tensor):
     Function for scaling the covariance matrix. This function assumes m=2.
     args: 
         scaling_vec: Tensor containing the scaling terms (m).
-              covar: Covariance matrix. Could be (bs, m*N, m*N) or (m*N, m*N).
+        covar: Covariance matrix. Could be (bs, m*N, m*N) or (m*N, m*N).
     returns:
         covar_scaled: Scaled covariance matrix  with shape corresponding to covar.
     """
@@ -77,15 +85,14 @@ def MSE_projection(X, Y, VX=None):
     """
     Given X, project it onto Y.
     args:
-          X: np array (bs, N, m).
-          Y: np array (bs, N, m).
-         VX: Covariance of X values as np array (bs, m*N, m*N).
-
+        X: np array (bs, N, m).
+        Y: np array (bs, N, m).
+        VX: Covariance of X values as np array (bs, m*N, m*N).
     returns:
-            Y_pred: affine transformation of X (bs, N, m).
-                 W: nparray (m+1, m).
-               MSE: ||Y - Y_pred||^2.
-           VY_pred: cov matrix of Y_pred (bs, m*N, m*N).
+        Y_pred: affine transformation of X (bs, N, m).
+        W: nparray (m+1, m).
+        MSE: ||Y - Y_pred||^2.
+        VY_pred: cov matrix of Y_pred (bs, m*N, m*N).
     """
 
     bs, N, m = X.shape
@@ -135,18 +142,18 @@ def plot_latents(loc:str, file_name:str, vid_batch:torch.tensor, dY:torch.tensor
     """
     Plots videos, latent states and reconstructions.
     args:
-             loc: location to store file.
-       file_name: filename.
-       vid_batch: (_, N, d, d) tensor of videos.
-              dY: (_, N, m) tensor of latent states.
-              dT: (N) tensor of time.
-            tmax: Maximum time point.
-          nplots: number of cols of plot, col row is one video.
-     recon_batch: (_, N, d, d) tensor of reconstructed videos.
-      recon_traj: (_, N, m) tensor of reconstructed trajectory.
-     recon_covar: (_, m*N, m*N) covariance matrix of reconstructed trajectory.
+        loc: location to store file.
+        file_name: filename.
+        vid_batch: (_, N, d, d) tensor of videos.
+        dY: (_, N, m) tensor of latent states.
+        dT: (N) tensor of time.
+        tmax: Maximum time point.
+        nplots: number of cols of plot, col row is one video.
+        recon_batch: (_, N, d, d) tensor of reconstructed videos.
+        recon_traj: (_, N, m) tensor of reconstructed trajectory.
+        recon_covar: (_, m*N, m*N) covariance matrix of reconstructed trajectory.
     returns:
-              ax: figure object with all plots.
+        ax: figure object with all plots.
     """
     M, Q, N, d, _ = vid_batch.shape
     vid_batch = vid_batch.reshape(M*Q, N, d, d)
@@ -172,9 +179,9 @@ def plot_latents(loc:str, file_name:str, vid_batch:torch.tensor, dY:torch.tensor
     def make_heatmap(vid):
         """
         args:
-               vid: N, d, d
+            vid: N, d, d
         returns:
-          flat_vid: d, d
+            flat_vid: d, d
         """
         vid = torch.stack( [(t+4)*v for t,v in enumerate(vid)], dim=0 )
         flat_vid = (1/(4+tmax)) * torch.max(vid, 0).values
@@ -356,7 +363,7 @@ def test_covar(covar, tol_sym=1e-3, tol_pos=1e-3):
     """
     Tests if covariance matrix is symmetric and positive definite.
     args:
-          covar: Covariance matrix.
+        covar: Covariance matrix.
         tol_sym: tolerance for  symmetry check.
         tol_pos: tolerance for pos. def. check.
     returns:

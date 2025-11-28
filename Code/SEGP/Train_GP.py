@@ -1,3 +1,10 @@
+
+
+"""
+Script for training the SEGP.
+"""
+
+
 import torch
 import torch.nn as nn
 import torch.nn.utils.parametrize as parametrize
@@ -14,7 +21,6 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 root = '/bask/projects/v/vjgo8416-lurienet/SEGP/'
-
 
 # Directory SEGP model is stored.
 GP_path = root + 'Code/SEGP'
@@ -42,17 +48,16 @@ from Utils import scale_mean, scale_covar
 def get_dataloaders(dY:torch.tensor, batches:int, bs:int, test_split:float, seed:int, device):
   """
   Function for splitting data into train and test dataloaders.
-  args:
-                  dY: latent states to split into train and test sets (M, Q, N, m).
-            batches: number of batches.
-                  bs: batch size.
-          test_split: ratio of batches to reserve for testing.
-                seed: random seed.
-              device: hardware device.
-
-  returns:
-        train_loader: dataloader with shape = (batches - N_test, bs, N, m).
-        test_loader: dataloader with shape = (N_test, bs, N, m).
+    args:
+      dY: latent states to split into train and test sets (M, Q, N, m).
+      batches: number of batches.
+      bs: batch size.
+      test_split: ratio of batches to reserve for testing.
+      seed: random seed.
+      device: hardware device.
+    returns:
+      train_loader: dataloader with shape = (batches - N_test, bs, N, m).
+      test_loader: dataloader with shape = (N_test, bs, N, m).
   """
 
   M, Q, N, m = dY.shape
@@ -108,13 +113,13 @@ class MLL(nn.Module):
                 covar_noise:torch.tensor):
         """
         Computes mll objective.
-        args:
-                  obs: Observed data (bs, N, m).
-                 mean: SEGP mean function (N, m).
-                covar: SEGP covariance matrix (m*N, m*N).
-          covar_noise: Covariance matrix for the measurement noise (m*N, m*N).
-        returns:
-               mll_av: log marginal likelihood averaged over the batch.
+          args:
+              obs: Observed data (bs, N, m).
+              mean: SEGP mean function (N, m).
+              covar: SEGP covariance matrix (m*N, m*N).
+              covar_noise: Covariance matrix for the measurement noise (m*N, m*N).
+          returns:
+              mll_av: log marginal likelihood averaged over the batch.
         """
 
         bs, N, m = obs.shape
@@ -162,25 +167,25 @@ def train(T:torch.tensor, dT:torch.tensor, tmax:float, mean_U:torch.tensor, mean
           train_loader, test_loader, max_epoch:int, model, optimizer, mll, model_dir:str, device, ds_vec, us_vec):
     """
     Training loop.
-    args:           
-                     T: "Continuous" time points for computing integrals in GP, shape = (K). 
-                    dT: Sampled time points to compute the prior mean and covariance matrix, shape = (N).
-                  tmax: Maximum time point.
-                mean_U: "Continuous" mean function of U used in GP integrals, shape = (K,p).
-               mean_dU: Discretised mean function of U corresponding to dT, shape = (N,p).
-           covar_noise: Covariance of noise, shape = (mN, mN).
+      args:           
+          T: "Continuous" time points for computing integrals in GP, shape = (K). 
+          dT: Sampled time points to compute the prior mean and covariance matrix, shape = (N).
+          tmax: Maximum time point.
+          mean_U: "Continuous" mean function of U used in GP integrals, shape = (K,p).
+          mean_dU: Discretised mean function of U corresponding to dT, shape = (N,p).
+          covar_noise: Covariance of noise, shape = (mN, mN).
           train_loader: Dataloader for training set. Each batch has shape = (1, bs, N, m).
-           test_loader: Dataloader for test set. Each batch has shape = (1, bs, N, m).
-             max_epoch: Epoch which training will terminate at.
-                 model: Gaussian Process.
-             optimizer: Chosen optimizer.
-                   mll: MLL objective function.
-             model_dir: Path to where models and data are stored.
-                device: Hardware in use.
-                ds_vec: Tensor containing down scaling terms for each of the m latent state dimensions shape = (m).
-                us_vec: Tensor containing up scaling terms for each of the m latent state dimensions shape = (m).
-    returns:
-                 model: Final version of the GP.
+          test_loader: Dataloader for test set. Each batch has shape = (1, bs, N, m).
+          max_epoch: Epoch which training will terminate at.
+          model: Gaussian Process.
+          optimizer: Chosen optimizer.
+          mll: MLL objective function.
+          model_dir: Path to where models and data are stored.
+          device: Hardware in use.
+          ds_vec: Tensor containing down scaling terms for each of the m latent state dimensions shape = (m).
+          us_vec: Tensor containing up scaling terms for each of the m latent state dimensions shape = (m).
+      returns:
+          model: Final version of the GP.
     """
 
     covar_noise_scaled = scale_covar(ds_vec, covar_noise) # (mN, mN)

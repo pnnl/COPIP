@@ -1,3 +1,11 @@
+
+
+
+"""
+Script for defining the VAE encoder and decoder.
+"""
+
+
 import torch
 import torch.nn as nn
 import torch.nn.init as init
@@ -14,9 +22,9 @@ class VAEEncoder(nn.Module):
     Encoder. Maps frames (bs, N, d, d) to mean (bs, N, m) and variance (bs, N, m) of likelihood.
     self.encoder returns log(var) to avoid numerical stability issues.
     args:
-          input_dim: flattened dimension of image (d * d).
-         hidden_dim: dimension of hidden layer.
-         output_dim: dimension of latent state (m).
+        input_dim: flattened dimension of image (d * d).
+        hidden_dim: dimension of hidden layer.
+        output_dim: dimension of latent state (m).
     '''
 
     def __init__(self, input_dim:int, hidden_dim:int, output_dim:int):
@@ -67,9 +75,9 @@ class VAEDecoder(nn.Module):
     Decoder. Maps latent states (bs, N, m) to logits of Bernoulli dist. (bs, N, d*d).
     Returns logits rather than probabilities due to format required for nn.BCEWithLogitsLoss().
     args:
-          input_dim: dimension of latent state (m).
-         hidden_dim: diemension of hidden layer.
-         output_dim: flattened dimension of image (d * d).
+        input_dim: dimension of latent state (m).
+        hidden_dim: diemension of hidden layer.
+        output_dim: flattened dimension of image (d * d).
     '''
 
     def __init__(self, input_dim:int, hidden_dim:int, output_dim:int):

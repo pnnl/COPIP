@@ -58,16 +58,16 @@ class SEGP(nn.Module):
     """
     Stability enhanced GP model class.
     args:
-           m: dimension of output.
-           n: dimension of state.
-           p: dimension of input.
-          lt: SE length scale.
-     mean_x0: mean of the initial condition.
-    covar_x0: covariance matrix for the initial condition.
-           A: Parameter of GP. Learnt if set to None.
-           B: Parameter of GP. Learnt if set to None.
-           C: Parameter of GP. Learnt if set to None.
-           D: Parameter of GP. Learnt if set to None.
+        m: dimension of output.
+        n: dimension of state.
+        p: dimension of input.
+        lt: SE length scale.
+        mean_x0: mean of the initial condition.
+        covar_x0: covariance matrix for the initial condition.
+        A: Parameter of GP. Learnt if set to None.
+        B: Parameter of GP. Learnt if set to None.
+        C: Parameter of GP. Learnt if set to None.
+        D: Parameter of GP. Learnt if set to None.
 
     functions:
             forward: computes the prior mean and covariance matrix.
@@ -150,7 +150,7 @@ class SEGP(nn.Module):
         Computes G1 term for each integration step (T_int) up to the specified discrete time step, t.
         args:
             t: discrete time step.
-        T_int: time array sliced with last element equal to t.
+            T_int: time array sliced with last element equal to t.
             A: Parameter of SEGP.
             B: Parameter of SEGP.
             C: Parameter of SEGP.
@@ -173,8 +173,8 @@ class SEGP(nn.Module):
         """
         Squared exponential (SE) kernel chosen for input signal.
         args:
-                 T1: array of time inputs with shape = (N1).
-                 T2: array of time inputs with shape = (N2).
+            T1: array of time inputs with shape = (N1).
+            T2: array of time inputs with shape = (N2).
         returns:
             covar_U: SE Covariance matrix with shape = (N1, N2).
         """
@@ -196,16 +196,16 @@ class SEGP(nn.Module):
         """
         Computes the mean function of the SEGP.
         args:
-           dT: Sampled time points to compute the prior mean and covariance matrix.
-         tmax: Maximum time point.
-       mean_U: Continuous mean function of U used in integral.
-      mean_dU: Discretised mean function of U.
+            dT: Sampled time points to compute the prior mean and covariance matrix.
+            tmax: Maximum time point.
+            mean_U: Continuous mean function of U used in integral.
+            mean_dU: Discretised mean function of U.
             A: Parameter of SEGP.
             B: Parameter of SEGP.
             C: Parameter of SEGP.
             D: Parameter of SEGP.
         returns:
-       mean_y: Mean of the SEGP.
+            mean_y: Mean of the SEGP.
         """
 
 
@@ -247,20 +247,20 @@ class SEGP(nn.Module):
         """
         Computes the Covariance matrix of the SEGP.
         args:
-              dT1: Set 1 of sampled time points.
-              dT2: Set 2 of sampled time points.
+            dT1: Set 1 of sampled time points.
+            dT2: Set 2 of sampled time points.
             tmax1: Maximum time point for set 1.
             tmax2: Maximum time point for set 2.
-          mean_U1: Continuous mean function of U used in integrals corresponding to T1.
-          mean_U2: Continuous mean function of U used in integrals corresponding to T2.
-         mean_dU1: Discretised mean function of U corresponding to dT1.
-         mean_dU2: Discretised mean function of U corresponding to dT2.
-                A: Parameter of SEGP.
-                B: Parameter of SEGP.
-                C: Parameter of SEGP.
-                D: Parameter of SEGP.
+            mean_U1: Continuous mean function of U used in integrals corresponding to T1.
+            mean_U2: Continuous mean function of U used in integrals corresponding to T2.
+            mean_dU1: Discretised mean function of U corresponding to dT1.
+            mean_dU2: Discretised mean function of U corresponding to dT2.
+            A: Parameter of SEGP.
+            B: Parameter of SEGP.
+            C: Parameter of SEGP.
+            D: Parameter of SEGP.
         returns:
-          covar_y: Mean of the SEGP.
+            covar_y: Mean of the SEGP.
         """
 
         N1 = dT1.shape[0]
@@ -400,13 +400,13 @@ class SEGP(nn.Module):
         """
         Returns the mean and covariance of the posterior SEGP for each trajectory in the batch.
             args:
-                 covar_lhood: Covariance matrix of the likelihood (bs, m*N, m*N).
-                  mean_lhood: Mean of the likelihood (bs, N, m).
-                  mean_prior: Mean of the GP prior (N, m).
-                 covar_prior: Covariance matrix of the GP prior (m*N, m*N).
+                covar_lhood: Covariance matrix of the likelihood (bs, m*N, m*N).
+                mean_lhood: Mean of the likelihood (bs, N, m).
+                mean_prior: Mean of the GP prior (N, m).
+                covar_prior: Covariance matrix of the GP prior (m*N, m*N).
             returns:
-                   mean_post: Posterior  mean (bs, N, m).
-                  covar_post: Posterior covariance matrix (bs, m*N, m*N).
+                mean_post: Posterior  mean (bs, N, m).
+                covar_post: Posterior covariance matrix (bs, m*N, m*N).
         """
 
         bs, N, m = mean_lhood.shape
@@ -429,17 +429,16 @@ class SEGP(nn.Module):
         """
         Returns the mean and covariance of the predictive SEGP for each trajectory in the batch.
             args:
-                        dT1: Set 1 of sampled time points.
-                        dT2: Set 2 of sampled time points.
-                    tmax1: Maximum time point for set 1.
-                    tmax2: Maximum time point for set 2.
-                    mean_U1: Continuous mean function of U used in integrals corresponding to T1.
-                    mean_U2: Continuous mean function of U used in integrals corresponding to T2.
+                dT1: Set 1 of sampled time points.
+                dT2: Set 2 of sampled time points.
+                tmax1: Maximum time point for set 1.
+                tmax2: Maximum time point for set 2.
+                mean_U1: Continuous mean function of U used in integrals corresponding to T1.
+                mean_U2: Continuous mean function of U used in integrals corresponding to T2.
                 mean_dU1: Discretised mean function of U corresponding to dT1.
                 mean_dU2: Discretised mean function of U corresponding to dT2.
                 covar_noise: Covariance matrix for the measurement noise (bs, m*N1, m*N1).
-                        obs: Observed data (bs, N1, m).
-
+                obs: Observed data (bs, N1, m).
             returns:
                 mean_pred: Predictive mean (bs, N2, m).
                 covar_pred: Predictive covariance matrix (bs, m*N2, m*N2).
@@ -496,11 +495,11 @@ class SEGP(nn.Module):
         """
         Draw n_samples of GP (for each item in batch).
         args:
-                     mean: Mean of GP (bs, N, m)
-                    covar: Covariance matrix of GP (bs, m*N, m*N).
-                n_samples: Number of samples to draw.
+            mean: Mean of GP (bs, N, m)
+            covar: Covariance matrix of GP (bs, m*N, m*N).
+            n_samples: Number of samples to draw.
         returns:
-                  samples: Samples from GP (bs, N, m, n_samples).
+            samples: Samples from GP (bs, N, m, n_samples).
         """
 
         bs, N, m = mean.shape
@@ -521,13 +520,13 @@ class SEGP(nn.Module):
         """
         Computes the SEGP prior mean and covariance matrix.
         args:
-                       dT: Set of sampled time points.
-                     tmax: Maximum time point.
-                   mean_U: Continuous mean function of U used in integrals corresponding to T.
-                  mean_dU: Discretised mean function of U corresponding to dT.
+            dT: Set of sampled time points.
+            tmax: Maximum time point.
+            mean_U: Continuous mean function of U used in integrals corresponding to T.
+            mean_dU: Discretised mean function of U corresponding to dT.
         returns:
-               mean_prior: Prior SEGP mean. (N, m)
-              covar_prior: Prior SEGP covariance matrix (m*N, m*N).
+            mean_prior: Prior SEGP mean. (N, m)
+            covar_prior: Prior SEGP covariance matrix (m*N, m*N).
         """
         
         N = len(dT)

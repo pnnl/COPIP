@@ -1,3 +1,9 @@
+
+
+"""
+Code for generating datasets containing trajectories and binary images of particle spiralling in plane.
+"""
+
 import torch
 import numpy as np
 import math
@@ -21,8 +27,20 @@ from Utils import plot_data, plot_latents, plot_individual_dims
 
 
 
-def sample_SE_input(seed, M, Q, tmax, mean_U, lt, T):
+def sample_SE_input(seed, M, mean_U, lt, T):
 
+    """
+    Function for sampling from GP input.
+    args:
+        seed: Random seed (int).
+        M: Number of input signals to sample (int).
+        mean_U: Mean of GP input, vector of len(T) (float).
+        lt: Length scale parameter of GP (float).
+        T: Time domain (float).
+    returns:
+        U: (M, K) vector of GP samples.
+     
+    """
     K = len(T)
 
     # Define GP.
@@ -48,6 +66,18 @@ def sample_SE_input(seed, M, Q, tmax, mean_U, lt, T):
 
 def sample_init(seed, Q, mean_r, mean_theta, sigma):
 
+    """
+    Function for sampling initial condition for Gaussian dist.
+    args:
+        seed: Random seed (int).
+        Q: Number of initial conditions to sample (int).
+        mean_r: Mean of radius (float).
+        mean_theta: Mean of angle (float).
+        sigma: Standard deviation (float).
+    returns:
+        z0: Sample of initial conditions (nparray).
+    """
+
     # Generate Q random samples from normal distributions.
     rng = np.random.default_rng(seed)
     r = mean_r + sigma * rng.standard_normal(Q) # shape = (Q)
@@ -61,6 +91,16 @@ def sample_init(seed, Q, mean_r, mean_theta, sigma):
 
 def solve_particle(T, U, Z0, l):
 
+    """
+    Generates trajectories of LTI system in response to sampled inputs and initial conditions.
+    args:
+        T: Time domain (float).
+        U: (M, K) vector of GP samples.
+        Z0: (Q, n) Sample of initial conditions (nparray).
+        l: Decay rate of dynamics (float).
+    returns:
+        z: nprray of trajectories with shape (M, Q, K, n) where K = len(T) and n = state dimension.
+    """
     M, K = U.shape
     Q, n = Z0.shape
 
@@ -82,8 +122,47 @@ def solve_particle(T, U, Z0, l):
 
 
 
+def discretize_signals(Ts, T, mean_U, U, Z):
+
+    """
+    Function for discretising continuous signals (T, U, Z).
+    args:
+        Ts: Sampling period (int).
+        T: Time domain (float).
+        mean_U: Mean of GP input, vector of len(T) (float).
+        U: (M, K) vector of GP samples.
+        Z: State trajectories with shape (M, Q, K, n) where K = len(T) and n = state dimension.
+    returns:
+        dT: Discretised time domain.
+        mean_dU: discretised mean vector.
+        dU: Discretised input.
+        dZ: Discretised state.
+    """
+    
+    dT = T[torch.remainder(torch.arange(T.shape[0]), Ts) == 0] # shape = (N).
+    dU = U[:, torch.remainder(torch.arange(U.shape[1]), Ts) == 0] # shape = (M, N).
+    dZ = Z[:, :, torch.remainder(torch.arange(Z.shape[2]), Ts) == 0, :] # shape = (M, Q, N, n).
+    mean_dU = mean_U[torch.remainder(torch.arange(mean_U.shape[0]), Ts) == 0] # shape = (N).
+
+    return dT, mean_dU, dU, dZ
+
+
+
+def add_noise(seed, var_noise, dZ):
+    return dZ + np.sqrt(var_noise) * torch.randn( dZ.size() ) # shape = (M, Q, N, n).
+
+
+
 def transform_coords(z):
 
+    """
+    Maps state co-ordinates from (radius, angle) to (x, y). Required for generating images.
+    args:
+        z: Array of state trajectories in Polar co-ords with shape (M, Q, K, n).
+    returns:
+        z_transformed: Array of state trajectories in Cartesian co-ords with shape (M, Q, K, n).
+    """
+    
     # Radius and angle.
     r = z[:,:,:,0] # shape = (M, Q, K).
     theta = z[:,:,:,1] # shape = (M, Q, K).
@@ -99,29 +178,13 @@ def transform_coords(z):
 
 
 
-def discretize_signals(Ts, T, mean_U, U, Z):
-
-    dT = T[torch.remainder(torch.arange(T.shape[0]), Ts) == 0] # shape = (N).
-    dU = U[:, torch.remainder(torch.arange(U.shape[1]), Ts) == 0] # shape = (M, N).
-    dZ = Z[:, :, torch.remainder(torch.arange(Z.shape[2]), Ts) == 0, :] # shape = (M, Q, N, n).
-    mean_dU = mean_U[torch.remainder(torch.arange(mean_U.shape[0]), Ts) == 0] # shape = (N).
-
-    return dT, mean_dU, dU, dZ
-
-
-
-def add_noise(seed, var_noise, dZ):
-    return dZ + np.sqrt(var_noise) * torch.randn( dZ.size() ) # shape = (M, Q, N, n).
-
-
-
 def traj_2_vid(r:int, d:int, dZ:torch.tensor):
     """
     Convert discretised trajectories to video.
     args:
-                r: radius of ball in pixels.
-                d: number of horizontal/vertical pixels in a frame.
-              dZ: (M, Q, N, n) tensor of discretised latent states (noisy or noise-free).
+        r: radius of ball in pixels.
+        d: number of horizontal/vertical pixels in a frame.
+        dZ: (M, Q, N, n) tensor of discretised latent states (noisy or noise-free).
     returns:
         vid_batch: (M, Q, N, d, d) tensor of videos.
     """
@@ -223,7 +286,7 @@ def main():
     # Sample M input signals and Q initial conditions.
     M = 100000
     Q = 1
-    U = sample_SE_input(seed, M, Q, tmax, mean_U, lt, T) # shape = (M, K).
+    U = sample_SE_input(seed, M, mean_U, lt, T) # shape = (M, K).
     Z0 = sample_init(seed, Q, mean_r, mean_theta, sigma) # shape = (Q, n).
 
     # Convert to nparrays - this will run on cpu.

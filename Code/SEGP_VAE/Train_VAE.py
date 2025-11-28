@@ -1,3 +1,10 @@
+
+
+"""
+Script for training the VAE.
+"""
+
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -50,18 +57,17 @@ def get_dataloaders(vid_batch:torch.tensor, dY:torch.tensor, batches:int, bs:int
     Function for splitting data into train and test dataloaders. Latent states corresponding to
     test loader data are also returned for plotting purposes.
     args:
-            vid_batch: data to split with shape = (M, Q, N, d, d).
-                   dY: latent states to split in same way for plots (M, Q, N, m).
-              batches: number of batches.
-                   bs: batch size.
-           test_split: ratio of batches to reserve for testing.
-                 seed: random seed.
-               device: hardware device.
-
+        vid_batch: data to split with shape = (M, Q, N, d, d).
+        dY: latent states to split in same way for plots (M, Q, N, m).
+        batches: number of batches.
+        bs: batch size.
+        test_split: ratio of batches to reserve for testing.
+        seed: random seed.
+        device: hardware device.
     returns:
-         train_loader: dataloader with shape = (batches - N_test, bs, N, d, d).
-          test_loader: dataloader with shape = (N_test, bs, N, d, d).
-              dY_test: latent states corresponding to test loader; shape = (N_test, bs, N, m).
+        train_loader: dataloader with shape = (batches - N_test, bs, N, d, d).
+        test_loader: dataloader with shape = (N_test, bs, N, d, d).
+        dY_test: latent states corresponding to test loader; shape = (N_test, bs, N, m).
     """
 
     M, Q, N, d, _ = vid_batch.shape
@@ -124,10 +130,10 @@ class ELBO(nn.Module):
         """
         Computes the average reconstruction term across a batch of data.
         args:
-                 vid_batch: Observed images (bs, N, d, d).
+            vid_batch: Observed images (bs, N, d, d).
             p_theta_logits: Logits of Bernouli distribution for each black/white pixel of image (bs, N, d, d).
         returns:
-                  recon_av: average reconstruction term (scalar).
+            recon_av: average reconstruction term (scalar).
         """
 
         bs, N, d, _  = p_theta_logits.shape
@@ -150,14 +156,13 @@ class ELBO(nn.Module):
 
         https://en.wikipedia.org/wiki/Kullback%E2%80%93Leibler_divergence#Introduction_and_context
         
-        Args:
-        - mean_post: Mean of the variational posterior distribution q(z) with shape (bs, N, m).
-        - covar_post: Covariance matrix of the variational posterior distribution q(z) with shape (bs, m*N, m*N).
-        - mean_prior: Mean of the prior distribution p(z) with shape (N, m).
-        - covar_prior: Covariance matrix of the prior distribution p(z) with shape (m*N, m*N).
-        
-        Returns:
-        - kl_div_av (scalar).
+        args:
+            mean_post: Mean of the variational posterior distribution q(z) with shape (bs, N, m).
+            covar_post: Covariance matrix of the variational posterior distribution q(z) with shape (bs, m*N, m*N).
+            mean_prior: Mean of the prior distribution p(z) with shape (N, m).
+            covar_prior: Covariance matrix of the prior distribution p(z) with shape (m*N, m*N).
+        returns:
+            kl_div_av (scalar).
         """
         
         bs, N, m = mean_post.shape
@@ -212,15 +217,15 @@ class ELBO(nn.Module):
         """
         Computes ELBO objective.
         args:
-                  vid_batch: Observed images (bs, N, d, d).
-             p_theta_logits: Logits of Bernouli distribution for each black/white pixel of image (bs, N, d, d).
-                 mean_prior: SEGP mean function (N, m).
-                covar_prior: SEGP covariance matrix (m*N, m*N).
-                  mean_post: SEGP posterior mean function (bs, N, m).
-                 covar_post: SEGP posterior covariance matrix (bs, m*N, m*N).
-                  kl_weight: weight for KL term of the ELBO objective. 
+            vid_batch: Observed images (bs, N, d, d).
+            p_theta_logits: Logits of Bernouli distribution for each black/white pixel of image (bs, N, d, d).
+            mean_prior: SEGP mean function (N, m).
+            covar_prior: SEGP covariance matrix (m*N, m*N).
+            mean_post: SEGP posterior mean function (bs, N, m).
+            covar_post: SEGP posterior covariance matrix (bs, m*N, m*N).
+            kl_weight: weight for KL term of the ELBO objective. 
         returns:
-                   elbo_obj: ELBO objective (scalar).
+            elbo_obj: ELBO objective (scalar).
         """
 
         self.recon_obj = self.recon(vid_batch, p_theta_logits) # should always be negative.
@@ -238,9 +243,9 @@ class KLAnnealingScheduler():
     Class for computing the weight of the KL divergence term (in the ELBO objective) to be used at each epoch.
     args:
         initial_beta: initial weight of KL term.
-          final_beta: final weight of KL term.
-             warm_up: number of epochs to linearly increase beta from initial_beta to final_beta. After warm_up, beta = final_beta.
-       start_warm_up: epoch to begin the warm up period.
+        final_beta: final weight of KL term.
+        warm_up: number of epochs to linearly increase beta from initial_beta to final_beta. After warm_up, beta = final_beta.
+        start_warm_up: epoch to begin the warm up period.
     """
     
     def __init__(self, initial_beta:float, final_beta:float, warm_up:int, start_warm_up:int):
@@ -269,30 +274,30 @@ def train(T, dT, tmax, mean_U, mean_dU, train_loader, test_loader, max_epoch, en
     """
     Training loop.
     args:           
-                     T: "Continuous" time points for computing integrals in GP, shape = (K). 
-                    dT: Sampled time points to compute the prior mean and covariance matrix, shape = (N).
-                  tmax: Maximum time point.
-                mean_U: "Continuous" mean function of U used in GP integrals, shape = (K,p).
-               mean_dU: Discretised mean function of U corresponding to dT, shape = (N,p).
-          train_loader: Dataloader for training set. Each batch has shape = (1, bs, N, m).
-           test_loader: Dataloader for test set. Each batch has shape = (1, bs, N, m).
-             max_epoch: Epoch which training will terminate at.
-                   enc: Encoder.
-                    GP: Gaussian Process.
-                   dec: Decoder.
-             optimizer: Chosen optimizer.
-                  elbo: ELBO objective function.
-              kl_sched: Annealing schedule for weighting the KL divergence term of ELBO loss.
-             CL_factor: Factor to reduce the length of videos by.
-             model_dir: Path to where models and data are stored.
-                device: Hardware in use.
-               dY_test: Ground truth latent states of test set (_, bs, N, m).
-                ds_vec: Tensor containing down scaling terms for each of the m latent state dimensions shape = (m).
-                us_vec: Tensor containing up scaling terms for each of the m latent state dimensions shape = (m).
-             min_epoch: Epoch which training will start at.
-                 stats: Existing stats dataframe.
+        T: "Continuous" time points for computing integrals in GP, shape = (K). 
+        dT: Sampled time points to compute the prior mean and covariance matrix, shape = (N).
+        tmax: Maximum time point.
+        mean_U: "Continuous" mean function of U used in GP integrals, shape = (K,p).
+        mean_dU: Discretised mean function of U corresponding to dT, shape = (N,p).
+        train_loader: Dataloader for training set. Each batch has shape = (1, bs, N, m).
+        test_loader: Dataloader for test set. Each batch has shape = (1, bs, N, m).
+        max_epoch: Epoch which training will terminate at.
+        enc: Encoder.
+        GP: Gaussian Process.
+        dec: Decoder.
+        optimizer: Chosen optimizer.
+        elbo: ELBO objective function.
+        kl_sched: Annealing schedule for weighting the KL divergence term of ELBO loss.
+        CL_factor: Factor to reduce the length of videos by.
+        model_dir: Path to where models and data are stored.
+        device: Hardware in use.
+        dY_test: Ground truth latent states of test set (_, bs, N, m).
+        ds_vec: Tensor containing down scaling terms for each of the m latent state dimensions shape = (m).
+        us_vec: Tensor containing up scaling terms for each of the m latent state dimensions shape = (m).
+        min_epoch: Epoch which training will start at.
+        stats: Existing stats dataframe.
     returns:
-           enc, GP, dec: Final version of the model.
+        enc, GP, dec: Final version of the model.
     """
 
     if CL_factor > 1 or CL_factor < 0 :

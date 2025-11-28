@@ -1,3 +1,9 @@
+
+
+"""
+Script for plotting figures used to evaluate GP.
+"""
+
 import torch
 import numpy as np
 import os
