@@ -419,13 +419,13 @@ def train(T, dT, tmax, mean_U, mean_dU, train_loader, test_loader, max_epoch, en
             # mean of Bernoulli for each pixel, averaged over n_samples.
             p_theta = torch.sigmoid(p_theta_logits) # shape = (bs, N, d, d)
             
-            # Project mean_post, covar_post from last test batch onto corresponding batch from Y_test.
-            proj_mean_post, W, MSE, proj_covar_post = MSE_projection(mean_post.cpu().numpy(), dY_test[batch,:,:N,:].cpu().numpy(), covar_post.cpu().numpy() )
-            torch.save(W, model_dir +  'W/epoch{:03d}.pt'.format(epoch) )
+            # # Project mean_post, covar_post from last test batch onto corresponding batch from Y_test.
+            # proj_mean_post, W, MSE, proj_covar_post = MSE_projection(mean_post.cpu().numpy(), dY_test[batch,:,:N,:].cpu().numpy(), covar_post.cpu().numpy() )
+            # torch.save(W, model_dir +  'W/epoch{:03d}.pt'.format(epoch) )
             
             nplots = 3
-            string = 'proj_latents_{:04d}'.format(epoch)
-            plot_latents(model_dir + 'Data/Plots', string, vid_batch.unflatten(dim=0, sizes=(1,bs)), dY_test[batch,:,:N,:].unflatten(dim=0, sizes=(1,bs)), dT[:N], tmax_cl, nplots, recon_batch=p_theta, recon_traj=proj_mean_post, recon_covar=proj_covar_post)
+            string = 'latents_{:04d}'.format(epoch) # 'proj_latents_{:04d}'.format(epoch)
+            plot_latents(model_dir + 'Data/Plots', string, vid_batch.unflatten(dim=0, sizes=(1,bs)), dY_test[batch,:,:N,:].unflatten(dim=0, sizes=(1,bs)), dT[:N], tmax_cl, nplots, recon_batch=p_theta, recon_traj=mean_post, recon_covar=covar_post)
 
         # save model, optimizer.
         checkpoint = {
@@ -482,15 +482,15 @@ def main():
     # Directory for storing checkpoints, plots, stats, etc.
     model_path = root + 'Models/'
     model_name = 'SEGP_VAE'
-    exp_no = 4
+    exp_no = 1
     model_dir = model_path + model_name + '/Exp_{:03d}/'.format(exp_no)
 
     # Flag indicating if a checkpoint is being loaded in, followed by the epoch to load.
-    Load = True
-    Load_epoch = 750 # does nothing if Load is False.
+    Load = False
+    Load_epoch = 0 # does nothing if Load is False.
     
     # If Load is True, these are the only extra parameters to be set. If False, more parameters below need to be set.
-    max_epoch = 851
+    max_epoch = 100
     CL_factor = 1.0 # curriculum learning factor for simplifying problem.
 
     # Directory where data is stored.
@@ -579,7 +579,6 @@ def main():
         h_dim = 500
     
         l = data_setup['l']
-        A = torch.tensor([[-l, 0.0], [0.0, 0.0]])
         B = torch.tensor([[0.0], [1.0]])
         C = torch.eye(m)
         D = torch.zeros(m,p)
@@ -594,17 +593,17 @@ def main():
     if Load:
         lr = train_settings['lr'] # manually drop lr as needed.
         wd = train_settings['wd']
-        initial_beta = 0.7 # train_settings['initial_beta']
-        final_beta = 0.6 # train_settings['final_beta']
-        warm_up = 20 # train_settings['warm_up']
-        start_warm_up = 751 # train_settings['start_warm_up']
+        initial_beta = train_settings['initial_beta']
+        final_beta = train_settings['final_beta']
+        warm_up = train_settings['warm_up']
+        start_warm_up = train_settings['start_warm_up']
     else:
         lr = 9e-4 # manually drop lr as needed.
         wd = 1e-5 # weight decay.
         initial_beta = 0.7 # initial weight of KL divergence in ELBO loss.
         final_beta = 0.6 # final weight of KL divergence in ELBO loss.
-        warm_up = 20 # number of epochs to linearly increase beta over.
-        start_warm_up = 751 # epoch to start linearly increasing beta.
+        warm_up = 0 # number of epochs to linearly increase beta over.
+        start_warm_up = 0 # epoch to start linearly increasing beta.
 
     optimizer = torch.optim.Adam(list(enc.parameters()) + list(dec.parameters()),lr=lr, weight_decay=wd)
     elbo = ELBO()
