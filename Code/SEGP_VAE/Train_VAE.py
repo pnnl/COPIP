@@ -579,6 +579,7 @@ def main():
         h_dim = 500
     
         l = data_setup['l']
+        A = torch.tensor([[l, 0.0], [0.0, 0.0]])
         B = torch.tensor([[0.0], [1.0]])
         C = torch.eye(m)
         D = torch.zeros(m,p)
