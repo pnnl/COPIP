@@ -89,11 +89,11 @@ class SEGP(nn.Module):
             self.V2 = nn.Linear(n, n, bias=False)
             self.V3 = nn.Linear(n, n, bias=False)
             nn.init.eye_(self.V1.weight)
-            nn.init.normal_(self.V2.weight, std=1e-3)
+            nn.init.normal_(self.V2.weight, std=0.2)
             nn.init.zeros_(self.V3.weight)
 
             parametrize.register_parametrization(self.V1, "weight", L_plus(n))
-            parametrize.register_parametrization(self.V2, "weight", L() ) # semi-contraction.
+            parametrize.register_parametrization(self.V2, "weight", L_plus(n) ) # semi-contraction. use L_plus for better stability.
             parametrize.register_parametrization(self.V3, "weight", Skew())
 
         else:
@@ -247,6 +247,8 @@ class SEGP(nn.Module):
         """
         Computes the Covariance matrix of the SEGP.
         args:
+            T1: Set 1 of continuous time points.
+            T2: Set 1 of continuous time points.
             dT1: Set 1 of sampled time points.
             dT2: Set 2 of sampled time points.
             tmax1: Maximum time point for set 1.
@@ -429,6 +431,8 @@ class SEGP(nn.Module):
         """
         Returns the mean and covariance of the predictive SEGP for each trajectory in the batch.
             args:
+                T1: Set 1 of continuous time points.
+                T2: Set 2 of continuous time points.
                 dT1: Set 1 of sampled time points.
                 dT2: Set 2 of sampled time points.
                 tmax1: Maximum time point for set 1.
@@ -520,6 +524,7 @@ class SEGP(nn.Module):
         """
         Computes the SEGP prior mean and covariance matrix.
         args:
+            T: Set of continuous time points.
             dT: Set of sampled time points.
             tmax: Maximum time point.
             mean_U: Continuous mean function of U used in integrals corresponding to T.

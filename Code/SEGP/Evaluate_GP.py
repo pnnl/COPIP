@@ -14,7 +14,7 @@ import seaborn as sns
 import pandas as pd
 
 
-root = '/bask/projects/v/vjgo8416-lurienet/SEGP/'
+root = ''
 
 # Directory SEGP model is stored.
 GP_path = root + 'Code/SEGP'
@@ -337,11 +337,11 @@ def main():
 
 
     # Paths.
-    root = '/bask/projects/v/vjgo8416-lurienet/SEGP/'
+    root = ''
     model_name = 'SEGP'
-    dataset_no = 4
-    exp_no = 5
-    model_no = 33
+    dataset_no = 1
+    exp_no = 1
+    model_no = 1
     data_path = root + 'Data/Dataset{0}'.format(dataset_no)
     model_path = root + 'Models/{}/Exp_{:03d}/'.format(model_name, exp_no)
     plots_path = model_path + 'Data/Plots/'

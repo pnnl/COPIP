@@ -20,7 +20,8 @@ import pickle
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-root = '/bask/projects/v/vjgo8416-lurienet/SEGP/'
+# root directory for project. 
+root = './'
 
 # Directory SEGP model is stored.
 GP_path = root + 'Code/SEGP'
@@ -287,13 +288,13 @@ def main():
   print("Device in use is: ", device)
 
   # Directory where data is stored.
-  dataset_number = 4 
+  dataset_number = 1
   data_path = root + 'Data/Dataset{0}'.format(dataset_number)
 
   # Directory for storing checkpoints, plots, stats, etc.
   model_path = root + 'Models/'
   model_name = 'SEGP'
-  exp_no = 5
+  exp_no = 1
   model_dir = model_path + model_name + '/Exp_{:03d}/'.format(exp_no)
 
   if os.path.isdir(model_dir):
@@ -342,8 +343,8 @@ def main():
 
   # l = data_setup['l']
   A = None # torch.tensor([[-l, 0.0], [0.0, 0.0]])
-  B = None # torch.tensor([[0.0], [1.0]])
-  C = None # torch.eye(m)
+  B = torch.tensor([[0.0], [1.0]])
+  C = torch.eye(m)
   D = torch.zeros(m,p)
 
   model = SEGP.SEGP(m, n, p, lt, mean_x0, covar_x0, A, B, C, D).to(device)
