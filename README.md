@@ -5,7 +5,7 @@ This code acompanies the papers [Stability Enhanced Gaussian Process Variational
 * Carl R Richardson (carl.richardson@eng.ox.ac.uk)
 * Jichen Zhang (jichen.zhang@eng.ox.ac.uk)
 * Ethan King (ethan.king@pnnl.gov)
-* Ján Drgoˇna (jdrgona1@jh.edu.)
+* Ján Drgoňa (jdrgona1@jh.edu.)
 
 ## Prerequisites
 All the code is written in Python and predominantly in PyTorch. This must be installed along with several other standard libraries such as Numpy, Matplotlib, etc. For easy use, please use the same file structure as below.
