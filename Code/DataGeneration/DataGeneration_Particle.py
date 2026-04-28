@@ -15,7 +15,7 @@ from scipy.integrate import odeint
 from scipy.interpolate import interp1d
 import gpytorch
 
-root = '/bask/projects/v/vjgo8416-lurienet/SEGP/'
+root = ''
 utils_path = root + 'Code/Utils'
 
 if utils_path in sys.path:
