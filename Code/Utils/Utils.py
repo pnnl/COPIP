@@ -81,61 +81,6 @@ def scale_covar(scaling_vec:torch.tensor, covar:torch.tensor):
 
 
 
-def MSE_projection(X, Y, VX=None):
-    """
-    Given X, project it onto Y.
-    args:
-        X: np array (bs, N, m).
-        Y: np array (bs, N, m).
-        VX: Covariance of X values as np array (bs, m*N, m*N).
-    returns:
-        Y_pred: affine transformation of X (bs, N, m).
-        W: nparray (m+1, m).
-        MSE: ||Y - Y_pred||^2.
-        VY_pred: cov matrix of Y_pred (bs, m*N, m*N).
-    """
-
-    bs, N, m = X.shape
-
-    # Reshape to stack all samples: (bs * N, m)
-    X_flat = X.reshape(-1, m)
-    Y_flat = Y.reshape(-1, m)
-
-    # Stack ones to include biases in W
-    X_flat = np.hstack([X_flat, np.ones((bs*N, 1))]) # (bs*N, m+1)
-    
-    # Get least squares solution, W = (m+1, m), MSE = (2)
-    W, MSE, rank, s = sp.linalg.lstsq(X_flat, Y_flat) 
-
-    try:
-        MSE = MSE[0] + MSE[1]
-    except:
-        MSE = np.nan
-
-    # Get predicted Y.
-    Y_pred = np.einsum('bnm,km->bnm', X, W)
-    Y_pred = torch.from_numpy(Y_pred) # (bs, N, m) 
-
-    # Get covariance matrix of Y_pred.
-    if VX is not None:
-      
-      # Build Kronecker product: W ⊗ I_N -> shape: (q*N, m*N)
-      I_N = np.eye(N)
-      kron = np.kron(W[:m], I_N)  # shape = (q*N, m*N)
-
-      # Transform covariance: K_new = kron.T @ K @ kron for each batch
-      VY_pred = np.empty((bs, m*N, m*N))
-      for b in range(bs):
-        VXb = VX[b]
-        VY_pred[b] = np.transpose(kron) @ VXb @ kron
-
-      VY_pred = torch.from_numpy(VY_pred)
-    else:
-      VY_pred = None
-
-    return Y_pred, torch.from_numpy(W), MSE, VY_pred
-
-
 
 def plot_latents(loc:str, file_name:str, vid_batch:torch.tensor, dY:torch.tensor, dT:torch.tensor,
                  tmax:float, nplots:int, recon_batch=None, recon_traj=None, recon_covar=None):
