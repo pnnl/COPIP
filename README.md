@@ -1,5 +1,5 @@
 # SEGP-VAE
-This code acompanies the papers [Stability Enhanced Gaussian Process Variational Autoencoders](https://arxiv.org/pdf/2604.09331)
+This code acompanies the paper [Stability Enhanced Gaussian Process Variational Autoencoders](https://arxiv.org/pdf/2604.09331). 
 
 ### Authors:
 * Carl R Richardson (carl.richardson@eng.ox.ac.uk)
@@ -25,7 +25,7 @@ The repository is organised as follows:
   * `Utils`
     * `Utils.py` : Script containing miscellaneous utility functions.
  * `Data` : Directory for storing datasets.
- * `Models` : Directory for storing models and associated files.
+ * `Models` : Directory for storing models and associated files. Includes a pre-trained SEGP (trained directly on the trajectory data) and SEGP-VAE.
 
 ## To replicate results in paper
 - Download dependencies.
